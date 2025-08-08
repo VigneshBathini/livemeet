@@ -12,6 +12,18 @@ const Video = () => {
   const userVideoRef = useRef();
   const peerVideoRefs = useRef({});
 
+  // Common ICE server config
+  const iceConfig = {
+    iceServers: [
+      { urls: 'stun:stun.l.google.com:19302' },
+      {
+        urls: 'turn:relay1.expressturn.com:3478',
+        username: 'efFjNn6ZpYbyQH5a',
+        credential: 'Rj7aYz2cGJ7SkFhK'
+      }
+    ]
+  };
+
   useEffect(() => {
     socketRef.current = io('https://livemeet-ribm.onrender.com');
 
@@ -38,7 +50,12 @@ const Video = () => {
 
   const handleUserJoined = (userId) => {
     logDebug(`User joined: ${userId}`);
-    const peer = new SimplePeer({ initiator: true, trickle: false, stream: localStream });
+    const peer = new SimplePeer({
+      initiator: true,
+      trickle: false,
+      stream: localStream,
+      config: iceConfig
+    });
 
     peer.on('signal', signal => {
       logDebug(`Sending offer to ${userId}`);
@@ -47,7 +64,9 @@ const Video = () => {
 
     peer.on('stream', stream => {
       logDebug(`Received stream from ${userId}`);
-      if (peerVideoRefs.current[userId]) peerVideoRefs.current[userId].srcObject = stream;
+      if (peerVideoRefs.current[userId]) {
+        peerVideoRefs.current[userId].srcObject = stream;
+      }
     });
 
     peer.on('error', err => logDebug(`Peer error with ${userId}: ${err.message}`));
@@ -58,7 +77,12 @@ const Video = () => {
 
   const handleOffer = (data) => {
     logDebug(`Received offer from ${data.from}`);
-    const peer = new SimplePeer({ initiator: false, trickle: false, stream: localStream });
+    const peer = new SimplePeer({
+      initiator: false,
+      trickle: false,
+      stream: localStream,
+      config: iceConfig
+    });
 
     peer.on('signal', signal => {
       logDebug(`Sending answer to ${data.from}`);
@@ -67,7 +91,9 @@ const Video = () => {
 
     peer.on('stream', stream => {
       logDebug(`Received stream from ${data.from}`);
-      if (peerVideoRefs.current[data.from]) peerVideoRefs.current[data.from].srcObject = stream;
+      if (peerVideoRefs.current[data.from]) {
+        peerVideoRefs.current[data.from].srcObject = stream;
+      }
     });
 
     peer.on('error', err => logDebug(`Peer error with ${data.from}: ${err.message}`));
