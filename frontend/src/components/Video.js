@@ -3,9 +3,7 @@ import io from 'socket.io-client';
 import SimplePeer from 'simple-peer';
 
 // Dynamic server URL
-const SIGNALING_SERVER_URL = process.env.NODE_ENV === 'development'
-  ? 'http://localhost:3000'
-  : 'https://livemeet-ribm.onrender.com';
+const SIGNALING_SERVER_URL = 'https://livemeet-ribm.onrender.com';
 
 const Video = () => {
   const [roomId, setRoomId] = useState('');
