@@ -1,35 +1,39 @@
 const express = require('express');
 const http = require('http');
-const socketIo = require('socket.io');
+const { Server } = require('socket.io');
+const cors = require('cors');
 
 const app = express();
 const server = http.createServer(app);
-const io = socketIo(server, {
+
+// CORS configuration
+app.use(cors({
+  origin: [ 'https://livemeet-ribm.onrender.com'],
+  methods: ['GET', 'POST'],
+  credentials: true,
+  allowedHeaders: ['Content-Type', 'Authorization']
+}));
+
+// Test endpoints
+app.get('/test', (req, res) => res.send('Server is running'));
+app.get('/', (req, res) => res.send('Socket.IO server is running'));
+
+const io = new Server(server, {
   cors: {
-    origin: '*',
-  },
+    origin: ['http://localhost:3000', 'https://livemeet-ribm.onrender.com'],
+    methods: ['GET', 'POST'],
+    credentials: true,
+    allowedHeaders: ['Content-Type', 'Authorization']
+  }
 });
 
-app.use(express.static('frontend/build'));
-
-const rooms = {};
-
 io.on('connection', (socket) => {
-  console.log(`User connected: ${socket.id}`);
+  console.log('New user connected:', socket.id);
 
   socket.on('join-room', (roomId, userId) => {
     socket.join(roomId);
-    rooms[roomId] = rooms[roomId] || new Set();
-    rooms[roomId].add(userId);
-
-    socket.to(roomId).emit('user-joined', userId);
-
-    const usersInRoom = Array.from(rooms[roomId]);
-    usersInRoom.forEach((u) => {
-      if (u !== userId) {
-        socket.emit('user-joined', u);
-      }
-    });
+    socket.to(roomId).emit('user-joined', userId || socket.id);
+    console.log(`${userId || socket.id} joined room ${roomId}`);
   });
 
   socket.on('offer', (data) => {
@@ -44,27 +48,13 @@ io.on('connection', (socket) => {
     socket.to(data.to).emit('ice-candidate', { candidate: data.candidate, from: socket.id });
   });
 
-  socket.on('chat-message', (data) => {
-    console.log(`Chat message from ${data.from} in room ${data.roomId}: ${data.message}`);
-    io.to(data.roomId).emit('chat-message', { from: data.from, message: data.message });
-  });
-
   socket.on('disconnect', () => {
-    console.log(`User disconnected: ${socket.id}`);
-    for (const roomId in rooms) {
-      if (rooms[roomId].has(socket.id)) {
-        rooms[roomId].delete(socket.id);
-        socket.to(roomId).emit('user-left', socket.id);
-        if (rooms[roomId].size === 0) {
-          delete rooms[roomId];
-        }
-        break;
-      }
-    }
+    socket.broadcast.emit('user-left', socket.id);
+    console.log('User disconnected:', socket.id);
   });
 });
 
-const PORT = process.env.PORT || 3000;
+const PORT = 3000;
 server.listen(PORT, '0.0.0.0', () => {
   console.log(`Server running on port ${PORT}`);
 });

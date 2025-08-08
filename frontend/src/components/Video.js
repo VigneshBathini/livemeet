@@ -25,8 +25,6 @@ const Video = () => {
   const [inRoom, setInRoom] = useState(false);
   const [peers, setPeers] = useState({});
   const [debugLog, setDebugLog] = useState([]);
-  const [messages, setMessages] = useState([]);
-  const [messageInput, setMessageInput] = useState('');
 
   const socketRef = useRef();
   const userVideoRef = useRef();
@@ -67,7 +65,6 @@ const Video = () => {
     socketRef.current.on('answer', handleAnswer);
     socketRef.current.on('ice-candidate', handleIceCandidate);
     socketRef.current.on('user-left', handleUserLeft);
-    socketRef.current.on('chat-message', handleChatMessage);
 
     return () => {
       socketRef.current.disconnect();
@@ -115,6 +112,7 @@ const Video = () => {
   };
 
   const createPeer = (userId, initiator) => {
+    logDebug(`Creating peer for ${userId}, initiator: ${initiator}`);
     const peer = new SimplePeer({
       initiator,
       trickle: true,
@@ -184,7 +182,7 @@ const Video = () => {
   };
 
   const handleUserJoined = (userId) => {
-    logDebug(`User joined: ${userId}`);
+    logDebug(`User joined: ${userId}, current peers: ${Object.keys(peers)}`);
     const peer = createPeer(userId, true);
     setPeers((prev) => ({ ...prev, [userId]: peer }));
   };
@@ -194,10 +192,10 @@ const Video = () => {
     if (!peers[data.from]) {
       const peer = createPeer(data.from, false);
       peer.signal(data.signal);
+      setPeers((prev) => ({ ...prev, [data.from]: peer }));
       peer.on('signal', (signal) => {
         logDebug(`Sending answer to ${data.from}`);
         socketRef.current.emit('answer', { signal, to: data.from });
-        setPeers((prev) => ({ ...prev, [data.from]: peer }));
       });
     } else {
       logDebug(`Peer already exists for ${data.from}, signaling existing peer`);
@@ -206,9 +204,14 @@ const Video = () => {
   };
 
   const handleAnswer = (data) => {
-    logDebug(`Received answer from ${data.from}`);
+    logDebug(`Received answer from ${data.from}, current peers: ${Object.keys(peers)}`);
     if (!peers[data.from]) {
-      logDebug(`Warning: No peer found for ${data.from}, this should not happen`);
+      logDebug(`Warning: No peer found for ${data.from}, attempting recovery`);
+      const peer = createPeer(data.from, false);
+      peer.signal(data.signal);
+      setPeers((prev) => ({ ...prev, [data.from]: peer }));
+      peer.answered = true;
+      logDebug(`Recovered peer for ${data.from}`);
       return;
     }
     if (!peers[data.from].answered) {
@@ -242,107 +245,54 @@ const Video = () => {
     }
   };
 
-  const handleChatMessage = (data) => {
-    logDebug(`Received chat message from ${data.from}: ${data.message}`);
-    setMessages((prev) => [...prev, { from: data.from, message: data.message }]);
-  };
-
-  const sendMessage = () => {
-    if (messageInput.trim() && inRoom) {
-      const messageData = {
-        roomId,
-        from: socketRef.current.id,
-        message: messageInput,
-      };
-      logDebug(`Sending chat message: ${messageInput}`);
-      socketRef.current.emit('chat-message', messageData);
-      setMessages((prev) => [...prev, { from: 'Me', message: messageInput }]);
-      setMessageInput('');
-    }
-  };
-
   return (
     <ErrorBoundary>
-      <div style={{ display: 'flex', flexDirection: 'column', height: '100vh' }}>
+      <div>
         {!inRoom ? (
-          <div className="join-room" style={{ padding: '20px' }}>
+          <div className="join-room">
             <input
               type="text"
               value={roomId}
               onChange={(e) => setRoomId(e.target.value)}
               placeholder="Enter Room ID"
-              style={{ marginRight: '10px', padding: '5px' }}
             />
-            <button onClick={joinRoom} style={{ padding: '5px 10px' }}>
-              Join Room
-            </button>
+            <button onClick={joinRoom}>Join Room</button>
           </div>
         ) : (
-          <div style={{ display: 'flex', flex: 1 }}>
-            <div style={{ flex: 2, padding: '20px' }}>
-              <div className="video-container">
-                <div className="video-item">
+          <div>
+            <div className="video-container">
+              <div className="video-item">
+                <video
+                  ref={userVideoRef}
+                  autoPlay
+                  muted
+                  playsInline
+                  style={{ width: '320px', height: '240px', border: '1px solid #000', background: '#000' }}
+                />
+                <div>Your Video</div>
+              </div>
+              {Object.keys(peers).map((userId) => (
+                <div className="video-item" key={userId}>
                   <video
-                    ref={userVideoRef}
+                    ref={(el) => {
+                      if (el && !peerVideoRefs.current[userId]) {
+                        peerVideoRefs.current[userId] = el;
+                        logDebug(`Peer video ref assigned for ${userId}: ${!!el}`);
+                      }
+                    }}
                     autoPlay
-                    muted
                     playsInline
                     style={{ width: '320px', height: '240px', border: '1px solid #000', background: '#000' }}
                   />
-                  <div>Your Video</div>
+                  <div>Peer: {userId}</div>
                 </div>
-                {Object.keys(peers).map((userId) => (
-                  <div className="video-item" key={userId}>
-                    <video
-                      ref={(el) => {
-                        if (el && !peerVideoRefs.current[userId]) {
-                          peerVideoRefs.current[userId] = el;
-                          logDebug(`Peer video ref assigned for ${userId}: ${!!el}`);
-                        }
-                      }}
-                      autoPlay
-                      playsInline
-                      style={{ width: '320px', height: '240px', border: '1px solid #000', background: '#000' }}
-                    />
-                    <div>Peer: {userId}</div>
-                  </div>
-                ))}
-              </div>
+              ))}
             </div>
-            <div style={{ flex: 1, padding: '20px', borderLeft: '1px solid #ccc' }}>
-              <h3>Chat</h3>
-              <div
-                style={{
-                  height: '300px',
-                  overflowY: 'auto',
-                  border: '1px solid #ccc',
-                  marginBottom: '10px',
-                  padding: '10px',
-                }}
-              >
-                {messages.map((msg, index) => (
-                  <div key={index} style={{ margin: '5px 0' }}>
-                    <strong>{msg.from}: </strong>{msg.message}
-                  </div>
-                ))}
-              </div>
-              <input
-                type="text"
-                value={messageInput}
-                onChange={(e) => setMessageInput(e.target.value)}
-                placeholder="Type a message..."
-                style={{ width: '70%', padding: '5px', marginRight: '10px' }}
-                onKeyPress={(e) => e.key === 'Enter' && sendMessage()}
-              />
-              <button onClick={sendMessage} style={{ padding: '5px 10px' }}>
-                Send
-              </button>
-            </div>
-            <div className="debug" style={{ flex: 1, padding: '20px', borderLeft: '1px solid #ccc' }}>
+            <div className="debug">
               <h4>Debug Log:</h4>
-              <ul style={{ height: '300px', overflowY: 'auto', listStyle: 'none', padding: 0 }}>
+              <ul>
                 {debugLog.map((log, index) => (
-                  <li key={index} style={{ margin: '5px 0' }}>{log}</li>
+                  <li key={index}>{log}</li>
                 ))}
               </ul>
             </div>
