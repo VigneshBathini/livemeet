@@ -1,47 +1,35 @@
 const express = require('express');
 const http = require('http');
-const { Server } = require('socket.io');
-const cors = require('cors');
-const path = require('path');
+const socketIo = require('socket.io');
 
 const app = express();
 const server = http.createServer(app);
-
-// Serve static files from the React frontend build folder
-app.use(express.static(path.join(__dirname, '..', 'frontend', 'build')));
-
-// CORS configuration
-app.use(cors({
-  origin: ['https://livemeet-ribm.onrender.com'],
-  methods: ['GET', 'POST'],
-  credentials: true,
-  allowedHeaders: ['Content-Type', 'Authorization']
-}));
-
-const io = new Server(server, {
+const io = socketIo(server, {
   cors: {
-    origin: ['https://livemeet-ribm.onrender.com'],
-    methods: ['GET', 'POST'],
-    credentials: true,
-    allowedHeaders: ['Content-Type', 'Authorization']
-  }
+    origin: '*',
+  },
 });
 
-// Test endpoints (place below static file serving)
-app.get('/test', (req, res) => res.send('Server is running'));
+app.use(express.static('frontend/build'));
 
-// Handle all other routes with React's index.html
-app.get('*', (req, res) => {
-  res.sendFile(path.join(__dirname, '..', 'frontend', 'build', 'index.html'));
-});
+const rooms = {};
 
 io.on('connection', (socket) => {
-  console.log('New user connected:', socket.id);
+  console.log(`User connected: ${socket.id}`);
 
   socket.on('join-room', (roomId, userId) => {
     socket.join(roomId);
-    socket.to(roomId).emit('user-joined', userId || socket.id);
-    console.log(`${userId || socket.id} joined room ${roomId}`);
+    rooms[roomId] = rooms[roomId] || new Set();
+    rooms[roomId].add(userId);
+
+    socket.to(roomId).emit('user-joined', userId);
+
+    const usersInRoom = Array.from(rooms[roomId]);
+    usersInRoom.forEach((u) => {
+      if (u !== userId) {
+        socket.emit('user-joined', u);
+      }
+    });
   });
 
   socket.on('offer', (data) => {
@@ -56,9 +44,23 @@ io.on('connection', (socket) => {
     socket.to(data.to).emit('ice-candidate', { candidate: data.candidate, from: socket.id });
   });
 
+  socket.on('chat-message', (data) => {
+    console.log(`Chat message from ${data.from} in room ${data.roomId}: ${data.message}`);
+    io.to(data.roomId).emit('chat-message', { from: data.from, message: data.message });
+  });
+
   socket.on('disconnect', () => {
-    socket.broadcast.emit('user-left', socket.id);
-    console.log('User disconnected:', socket.id);
+    console.log(`User disconnected: ${socket.id}`);
+    for (const roomId in rooms) {
+      if (rooms[roomId].has(socket.id)) {
+        rooms[roomId].delete(socket.id);
+        socket.to(roomId).emit('user-left', socket.id);
+        if (rooms[roomId].size === 0) {
+          delete rooms[roomId];
+        }
+        break;
+      }
+    }
   });
 });
 
