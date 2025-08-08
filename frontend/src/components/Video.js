@@ -1,7 +1,11 @@
-// VideoConference.jsx
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import io from 'socket.io-client';
 import SimplePeer from 'simple-peer';
+
+// Use local server for testing, update to Render URL for production
+const SIGNALING_SERVER_URL = process.env.NODE_ENV === 'development' 
+  ? 'http://localhost:5000' 
+  : 'https://livemeet-server.onrender.com';
 
 const Video = () => {
   const [roomId, setRoomId] = useState('');
@@ -14,76 +18,101 @@ const Video = () => {
   const userVideoRef = useRef();
   const peerVideoRefs = useRef({});
 
-  const logDebug = (msg) => setDebugLog((prev) => [...prev, msg]);
+  // Debounced logging to prevent excessive state updates
+  const logDebug = useCallback((msg) => {
+    console.log(msg);
+    setDebugLog((prev) => [...prev, msg].slice(-50)); // Limit to last 50 logs
+  }, []);
+
+  // Handle video stream assignment
+  useEffect(() => {
+    if (localStream && userVideoRef.current) {
+      userVideoRef.current.srcObject = localStream;
+      logDebug('Local stream assigned to video element.');
+    } else if (!userVideoRef.current) {
+      logDebug('Error: userVideoRef is not assigned in useEffect.');
+    } else if (!localStream) {
+      logDebug('Error: localStream is not available.');
+    }
+  }, [localStream, logDebug]);
 
   const joinRoom = async () => {
     if (!roomId.trim()) {
       logDebug('Please enter a Room ID.');
       return;
     }
-
     logDebug(`Joining room: ${roomId}`);
 
-    // Connect socket
-    socketRef.current = io('https://livemeet-ribm.onrender.com');
+    // Initialize Socket.IO
+    socketRef.current = io(SIGNALING_SERVER_URL, {
+      transports: ['websocket'],
+      reconnection: true,
+      reconnectionAttempts: 5,
+      reconnectionDelay: 1000,
+    });
+    socketRef.current.on('connect', () => logDebug('Connected to signaling server'));
+    socketRef.current.on('connect_error', (err) => {
+      logDebug(`Socket connection error: ${err.message}, type: ${err.type}, code: ${err.code}, description: ${err.description || 'N/A'}`);
+      console.error('Socket connect error:', err);
+    });
+    socketRef.current.on('reconnect_failed', () => logDebug('Reconnection failed after 5 attempts'));
 
-    // Get local stream
+    // Get media stream
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
       setLocalStream(stream);
+      logDebug('Local stream acquired successfully.');
       if (userVideoRef.current) {
         userVideoRef.current.srcObject = stream;
-        logDebug('Local stream acquired.');
+        logDebug('Local stream assigned to video element in joinRoom.');
+      } else {
+        logDebug('Warning: userVideoRef not assigned during stream acquisition.');
       }
     } catch (err) {
-      logDebug(`Error accessing media: ${err.message}`);
+      logDebug(`Error accessing media: ${err.name} - ${err.message}`);
       return;
     }
 
-    // Socket listeners
     socketRef.current.on('user-joined', handleUserJoined);
     socketRef.current.on('offer', handleOffer);
     socketRef.current.on('answer', handleAnswer);
     socketRef.current.on('ice-candidate', handleIceCandidate);
     socketRef.current.on('user-left', handleUserLeft);
-
-    // Tell server we joined
     socketRef.current.emit('join-room', roomId);
-
     setInRoom(true);
   };
 
   const createPeer = (userId, initiator) => {
     const peer = new SimplePeer({
       initiator,
-      trickle: false,
+      trickle: true,
       stream: localStream,
       config: {
         iceServers: [
           { urls: 'stun:stun.l.google.com:19302' },
           {
-            urls: 'turn:relay1.expressturn.com:3478',
-            username: 'efFjNn6ZpYbyQH5a',
-            credential: 'Rj7aYz2cGJ7SkFhK'
+            urls: 'turn:openrelay.metered.ca:80',
+            username: 'openrelayproject',
+            credential: 'openrelayproject'
           }
         ]
       }
     });
-
     peer.on('signal', (signal) => {
       logDebug(`Sending ${initiator ? 'offer' : 'answer'} to ${userId}`);
       socketRef.current.emit(initiator ? 'offer' : 'answer', { signal, to: userId });
     });
-
+    peer.on('connect', () => logDebug(`Peer connected: ${userId}`));
     peer.on('stream', (stream) => {
       logDebug(`Received stream from ${userId}`);
       if (peerVideoRefs.current[userId]) {
         peerVideoRefs.current[userId].srcObject = stream;
+        logDebug(`Stream assigned to video element for ${userId}`);
+      } else {
+        logDebug(`Error: No video element for ${userId}`);
       }
     });
-
     peer.on('error', (err) => logDebug(`Peer error (${userId}): ${err.message}`));
-
     return peer;
   };
 
@@ -102,12 +131,20 @@ const Video = () => {
 
   const handleAnswer = (data) => {
     logDebug(`Received answer from ${data.from}`);
-    peers[data.from]?.signal(data.signal);
+    if (peers[data.from]) {
+      peers[data.from].signal(data.signal);
+    } else {
+      logDebug(`Error: No peer found for ${data.from}`);
+    }
   };
 
   const handleIceCandidate = (data) => {
     logDebug(`Received ICE candidate from ${data.from}`);
-    peers[data.from]?.signal(data.candidate);
+    if (peers[data.from]) {
+      peers[data.from].signal({ candidate: data.candidate });
+    } else {
+      logDebug(`Error: No peer found for ICE candidate from ${data.from}`);
+    }
   };
 
   const handleUserLeft = (userId) => {
@@ -136,12 +173,33 @@ const Video = () => {
         <div>
           <div className="video-container">
             <div className="video-item">
-              <video ref={userVideoRef} autoPlay muted playsInline />
+              <video
+                ref={(el) => {
+                  userVideoRef.current = el;
+                  console.log('userVideoRef assigned:', !!el);
+                  if (el && localStream) {
+                    el.srcObject = localStream;
+                    console.log('Local stream set in ref callback.');
+                  }
+                }}
+                autoPlay
+                muted
+                playsInline
+                style={{ width: '320px', height: '240px', border: '1px solid #000', background: '#000' }}
+              />
               <div>Your Video</div>
             </div>
             {Object.keys(peers).map((userId) => (
               <div className="video-item" key={userId}>
-                <video ref={(el) => (peerVideoRefs.current[userId] = el)} autoPlay playsInline />
+                <video
+                  ref={(el) => {
+                    peerVideoRefs.current[userId] = el;
+                    console.log(`Peer video ref assigned for ${userId}:`, !!el);
+                  }}
+                  autoPlay
+                  playsInline
+                  style={{ width: '320px', height: '240px', border: '1px solid #000', background: '#000' }}
+                />
                 <div>Peer: {userId}</div>
               </div>
             ))}
@@ -156,6 +214,20 @@ const Video = () => {
           </div>
         </div>
       )}
+      <style>
+        {`
+          .video-container {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+          }
+          .video-item {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+          }
+        `}
+      </style>
     </div>
   );
 };
