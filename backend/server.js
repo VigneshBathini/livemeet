@@ -8,7 +8,7 @@ const server = http.createServer(app);
 
 // CORS configuration
 app.use(cors({
-  origin: ['http://localhost:3000'],
+  origin: [ 'https://livemeet-ribm.onrender.com'],
   methods: ['GET', 'POST'],
   credentials: true,
   allowedHeaders: ['Content-Type', 'Authorization']
@@ -20,7 +20,7 @@ app.get('/', (req, res) => res.send('Socket.IO server is running'));
 
 const io = new Server(server, {
   cors: {
-    origin: ['http://localhost:3000'],
+    origin: ['https://livemeet-ribm.onrender.com'],
     methods: ['GET', 'POST'],
     credentials: true,
     allowedHeaders: ['Content-Type', 'Authorization']
