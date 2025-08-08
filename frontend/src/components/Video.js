@@ -1,116 +1,113 @@
 // VideoConference.jsx
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useRef } from 'react';
 import io from 'socket.io-client';
 import SimplePeer from 'simple-peer';
 
 const Video = () => {
   const [roomId, setRoomId] = useState('');
   const [localStream, setLocalStream] = useState(null);
+  const [inRoom, setInRoom] = useState(false);
   const [peers, setPeers] = useState({});
   const [debugLog, setDebugLog] = useState([]);
+
   const socketRef = useRef();
   const userVideoRef = useRef();
   const peerVideoRefs = useRef({});
 
-  // Common ICE server config
-  const iceConfig = {
-    iceServers: [
-      { urls: 'stun:stun.l.google.com:19302' },
-      {
-        urls: 'turn:relay1.expressturn.com:3478',
-        username: 'efFjNn6ZpYbyQH5a',
-        credential: 'Rj7aYz2cGJ7SkFhK'
-      }
-    ]
-  };
+  const logDebug = (msg) => setDebugLog((prev) => [...prev, msg]);
 
-  useEffect(() => {
+  const joinRoom = async () => {
+    if (!roomId.trim()) {
+      logDebug('Please enter a Room ID.');
+      return;
+    }
+
+    logDebug(`Joining room: ${roomId}`);
+
+    // Connect socket
     socketRef.current = io('https://livemeet-ribm.onrender.com');
 
-    navigator.mediaDevices.getUserMedia({ video: true, audio: true })
-      .then(stream => {
-        setLocalStream(stream);
-        if (userVideoRef.current) {
-          userVideoRef.current.srcObject = stream;
-          logDebug('Local stream acquired');
-        }
-      })
-      .catch(err => logDebug(`Error accessing media: ${err.message}`));
+    // Get local stream
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+      setLocalStream(stream);
+      if (userVideoRef.current) {
+        userVideoRef.current.srcObject = stream;
+        logDebug('Local stream acquired.');
+      }
+    } catch (err) {
+      logDebug(`Error accessing media: ${err.message}`);
+      return;
+    }
 
+    // Socket listeners
+    socketRef.current.on('user-joined', handleUserJoined);
     socketRef.current.on('offer', handleOffer);
     socketRef.current.on('answer', handleAnswer);
     socketRef.current.on('ice-candidate', handleIceCandidate);
-    socketRef.current.on('user-joined', handleUserJoined);
     socketRef.current.on('user-left', handleUserLeft);
 
-    return () => socketRef.current.disconnect();
-  }, []);
+    // Tell server we joined
+    socketRef.current.emit('join-room', roomId);
 
-  const logDebug = (message) => setDebugLog(prev => [...prev, message]);
+    setInRoom(true);
+  };
 
-  const handleUserJoined = (userId) => {
-    logDebug(`User joined: ${userId}`);
+  const createPeer = (userId, initiator) => {
     const peer = new SimplePeer({
-      initiator: true,
+      initiator,
       trickle: false,
       stream: localStream,
-      config: iceConfig
+      config: {
+        iceServers: [
+          { urls: 'stun:stun.l.google.com:19302' },
+          {
+            urls: 'turn:relay1.expressturn.com:3478',
+            username: 'efFjNn6ZpYbyQH5a',
+            credential: 'Rj7aYz2cGJ7SkFhK'
+          }
+        ]
+      }
     });
 
-    peer.on('signal', signal => {
-      logDebug(`Sending offer to ${userId}`);
-      socketRef.current.emit('offer', { signal, to: userId });
+    peer.on('signal', (signal) => {
+      logDebug(`Sending ${initiator ? 'offer' : 'answer'} to ${userId}`);
+      socketRef.current.emit(initiator ? 'offer' : 'answer', { signal, to: userId });
     });
 
-    peer.on('stream', stream => {
+    peer.on('stream', (stream) => {
       logDebug(`Received stream from ${userId}`);
       if (peerVideoRefs.current[userId]) {
         peerVideoRefs.current[userId].srcObject = stream;
       }
     });
 
-    peer.on('error', err => logDebug(`Peer error with ${userId}: ${err.message}`));
+    peer.on('error', (err) => logDebug(`Peer error (${userId}): ${err.message}`));
 
-    peers[userId] = peer;
-    setPeers({ ...peers });
+    return peer;
+  };
+
+  const handleUserJoined = (userId) => {
+    logDebug(`User joined: ${userId}`);
+    const peer = createPeer(userId, true);
+    setPeers((prev) => ({ ...prev, [userId]: peer }));
   };
 
   const handleOffer = (data) => {
     logDebug(`Received offer from ${data.from}`);
-    const peer = new SimplePeer({
-      initiator: false,
-      trickle: false,
-      stream: localStream,
-      config: iceConfig
-    });
-
-    peer.on('signal', signal => {
-      logDebug(`Sending answer to ${data.from}`);
-      socketRef.current.emit('answer', { signal, to: data.from });
-    });
-
-    peer.on('stream', stream => {
-      logDebug(`Received stream from ${data.from}`);
-      if (peerVideoRefs.current[data.from]) {
-        peerVideoRefs.current[data.from].srcObject = stream;
-      }
-    });
-
-    peer.on('error', err => logDebug(`Peer error with ${data.from}: ${err.message}`));
-
+    const peer = createPeer(data.from, false);
     peer.signal(data.signal);
-    peers[data.from] = peer;
-    setPeers({ ...peers });
+    setPeers((prev) => ({ ...prev, [data.from]: peer }));
   };
 
   const handleAnswer = (data) => {
     logDebug(`Received answer from ${data.from}`);
-    if (peers[data.from]) peers[data.from].signal(data.signal);
+    peers[data.from]?.signal(data.signal);
   };
 
   const handleIceCandidate = (data) => {
     logDebug(`Received ICE candidate from ${data.from}`);
-    if (peers[data.from]) peers[data.from].signal(data.candidate);
+    peers[data.from]?.signal(data.candidate);
   };
 
   const handleUserLeft = (userId) => {
@@ -123,18 +120,9 @@ const Video = () => {
     }
   };
 
-  const joinRoom = () => {
-    if (roomId && socketRef.current) {
-      logDebug(`Joining room: ${roomId}`);
-      socketRef.current.emit('join-room', roomId, socketRef.current.id);
-    } else {
-      logDebug('Room ID or socket not ready');
-    }
-  };
-
   return (
     <div>
-      {!localStream ? (
+      {!inRoom ? (
         <div className="join-room">
           <input
             type="text"
@@ -148,12 +136,12 @@ const Video = () => {
         <div>
           <div className="video-container">
             <div className="video-item">
-              <video ref={userVideoRef} autoPlay muted />
+              <video ref={userVideoRef} autoPlay muted playsInline />
               <div>Your Video</div>
             </div>
-            {Object.keys(peers).map(userId => (
+            {Object.keys(peers).map((userId) => (
               <div className="video-item" key={userId}>
-                <video ref={el => peerVideoRefs.current[userId] = el} autoPlay />
+                <video ref={(el) => (peerVideoRefs.current[userId] = el)} autoPlay playsInline />
                 <div>Peer: {userId}</div>
               </div>
             ))}
@@ -161,7 +149,9 @@ const Video = () => {
           <div className="debug">
             <h4>Debug Log:</h4>
             <ul>
-              {debugLog.map((log, index) => <li key={index}>{log}</li>)}
+              {debugLog.map((log, index) => (
+                <li key={index}>{log}</li>
+              ))}
             </ul>
           </div>
         </div>
