@@ -47,8 +47,9 @@ const Video = () => {
     socketRef.current = io(SIGNALING_SERVER_URL, {
       transports: ['websocket', 'polling'],
       reconnection: true,
-      reconnectionAttempts: 5,
-      reconnectionDelay: 1000,
+      reconnectionAttempts: 10,
+      reconnectionDelay: 2000,
+      reconnectionDelayMax: 5000,
     });
 
     socketRef.current.on('connect', () => logDebug('Connected to signaling server'));
@@ -56,7 +57,8 @@ const Video = () => {
       logDebug(`Socket connection error: ${err.message}, type: ${err.type}, code: ${err.code}, description: ${err.description || 'N/A'}`);
       console.error('Socket connect error:', err);
     });
-    socketRef.current.on('reconnect_failed', () => logDebug('Reconnection failed after 5 attempts'));
+    socketRef.current.on('reconnect', (attempt) => logDebug(`Reconnected after attempt ${attempt}`));
+    socketRef.current.on('reconnect_failed', () => logDebug('Reconnection failed after maximum attempts'));
 
     socketRef.current.on('user-joined', handleUserJoined);
     socketRef.current.on('offer', handleOffer);
@@ -117,6 +119,7 @@ const Video = () => {
       config: {
         iceServers: [
           { urls: 'stun:stun.l.google.com:19302' },
+          { urls: 'stun:stun1.l.google.com:19302' },
           {
             urls: 'turn:openrelay.metered.ca:80',
             username: 'openrelayproject',
@@ -127,13 +130,21 @@ const Video = () => {
             username: 'openrelayproject',
             credential: 'openrelayproject'
           }
-        ]
+        ],
+        iceTransportPolicy: 'all'
       }
     });
 
+    let offerSent = false;
     peer.on('signal', (signal) => {
-      logDebug(`Sending ${initiator ? 'offer' : 'answer'} to ${userId}`);
-      socketRef.current.emit(initiator ? 'offer' : 'answer', { signal, to: userId });
+      if (initiator && !offerSent) {
+        logDebug(`Sending offer to ${userId}`);
+        socketRef.current.emit('offer', { signal, to: userId });
+        offerSent = true;
+      } else if (!initiator) {
+        logDebug(`Sending answer to ${userId}`);
+        socketRef.current.emit('answer', { signal, to: userId });
+      }
     });
 
     peer.on('stream', (stream) => {
@@ -173,9 +184,18 @@ const Video = () => {
 
   const handleOffer = (data) => {
     logDebug(`Received offer from ${data.from}`);
-    const peer = createPeer(data.from, false);
-    peer.signal(data.signal);
-    setPeers((prev) => ({ ...prev, [data.from]: peer }));
+    if (!peers[data.from]) {
+      const peer = createPeer(data.from, false);
+      peer.signal(data.signal);
+      setPeers((prev) => ({ ...prev, [data.from]: peer }));
+      peer.on('signal', (signal) => {
+        logDebug(`Sending answer to ${data.from}`);
+        socketRef.current.emit('answer', { signal, to: data.from });
+      });
+    } else {
+      logDebug(`Peer already exists for ${data.from}, signaling existing peer`);
+      peers[data.from].signal(data.signal);
+    }
   };
 
   const handleAnswer = (data) => {
@@ -183,7 +203,10 @@ const Video = () => {
     if (peers[data.from]) {
       peers[data.from].signal(data.signal);
     } else {
-      logDebug(`Error: No peer found for ${data.from}`);
+      logDebug(`Error: No peer found for ${data.from}, creating new peer`);
+      const peer = createPeer(data.from, false);
+      peer.signal(data.signal);
+      setPeers((prev) => ({ ...prev, [data.from]: peer }));
     }
   };
 
