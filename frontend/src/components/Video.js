@@ -29,6 +29,7 @@ const Video = () => {
   const socketRef = useRef();
   const userVideoRef = useRef();
   const peerVideoRefs = useRef({});
+  const pendingCandidates = useRef({});
 
   const logDebug = useCallback((msg) => {
     console.log(msg);
@@ -111,78 +112,67 @@ const Video = () => {
     setInRoom(true);
   };
 
-  const createPeer = (userId, initiator) => {
-    logDebug(`Creating peer for ${userId}, initiator: ${initiator}`);
-    const peer = new SimplePeer({
-      initiator,
-      trickle: true,
-      stream: localStream,
-      config: {
-        iceServers: [
-          { urls: 'stun:stun.l.google.com:19302' },
-          { urls: 'stun:stun1.l.google.com:19302' },
-          {
-            urls: 'turn:openrelay.metered.ca:80',
-            username: 'openrelayproject',
-            credential: 'openrelayproject'
-          },
-          {
-            urls: 'turn:openrelay.metered.ca:443?transport=tcp',
-            username: 'openrelayproject',
-            credential: 'openrelayproject'
-          }
-        ],
-        iceTransportPolicy: 'all'
-      }
-    });
+ const createPeer = (userId, initiator) => {
+  logDebug(`Creating peer for ${userId}, initiator: ${initiator}`);
+  const peer = new SimplePeer({
+    initiator,
+    trickle: true,
+    stream: localStream,
+    config: {
+      iceServers: [
+        { urls: 'stun:stun.l.google.com:19302' },
+        { urls: 'stun:stun1.l.google.com:19302' },
+        {
+          urls: 'turn:openrelay.metered.ca:80',
+          username: 'openrelayproject',
+          credential: 'openrelayproject'
+        },
+        {
+          urls: 'turn:openrelay.metered.ca:443?transport=tcp',
+          username: 'openrelayproject',
+          credential: 'openrelayproject'
+        }
+      ]
+    }
+  });
 
-    peer.answered = false;
-    let offerSent = false;
-    peer.on('signal', (signal) => {
-  if (signal.type === 'offer') {
-    logDebug(`Sending offer to ${userId}`);
-    socketRef.current.emit('offer', { signal, to: userId });
-  } else if (signal.type === 'answer') {
-    logDebug(`Sending answer to ${userId}`);
-    socketRef.current.emit('answer', { signal, to: userId });
-  } else if (signal.candidate) {
-    logDebug(`Sending ICE candidate to ${userId}`);
-    socketRef.current.emit('ice-candidate', { candidate: signal.candidate, to: userId });
+  peer.on('signal', (signal) => {
+    if (signal.type === 'offer') {
+      socketRef.current.emit('offer', { signal, to: userId });
+    } else if (signal.type === 'answer') {
+      socketRef.current.emit('answer', { signal, to: userId });
+    } else if (signal.candidate) {
+      socketRef.current.emit('ice-candidate', { candidate: signal.candidate, to: userId });
+    }
+  });
+
+  peer.on('stream', (stream) => {
+    logDebug(`Received stream from ${userId}`);
+    if (peerVideoRefs.current[userId]) {
+      peerVideoRefs.current[userId].srcObject = stream;
+    } else {
+      setTimeout(() => {
+        if (peerVideoRefs.current[userId]) {
+          peerVideoRefs.current[userId].srcObject = stream;
+        }
+      }, 500);
+    }
+  });
+
+  peer.on('connect', () => logDebug(`Peer connection established with ${userId}`));
+  peer.on('error', (err) => logDebug(`Peer error (${userId}): ${err.message}`));
+
+
+  if (pendingCandidates.current[userId]) {
+    pendingCandidates.current[userId].forEach((candidate) => {
+      peer.signal({ candidate });
+    });
+    delete pendingCandidates.current[userId];
   }
-});
 
+  return peer;
+};
 
-    peer.on('stream', (stream) => {
-      logDebug(`Received stream from ${userId}`);
-      if (peerVideoRefs.current[userId]) {
-        peerVideoRefs.current[userId].srcObject = stream;
-        logDebug(`Stream assigned to video element for ${userId}`);
-      } else {
-        logDebug(`Error: No video element for ${userId}`);
-        setTimeout(() => {
-          if (peerVideoRefs.current[userId]) {
-            peerVideoRefs.current[userId].srcObject = stream;
-            logDebug(`Stream assigned on retry for ${userId}`);
-          }
-        }, 500);
-      }
-    });
-
-    peer.on('connect', () => {
-      logDebug(`Peer connection established with ${userId}`);
-    });
-
-    peer.on('iceStateChange', (iceConnectionState) => {
-      logDebug(`ICE connection state for ${userId}: ${iceConnectionState}`);
-      if (iceConnectionState === 'failed') {
-        logDebug(`ICE connection failed for ${userId}, attempting recovery`);
-      }
-    });
-
-    peer.on('error', (err) => logDebug(`Peer error (${userId}): ${err.message}`));
-
-    return peer;
-  };
 
   const handleUserJoined = (userId) => {
     logDebug(`User joined: ${userId}, current peers: ${Object.keys(peers)}`);
@@ -228,12 +218,16 @@ const Video = () => {
 
   
 
-  const handleIceCandidate = (data) => {
+const handleIceCandidate = (data) => {
   logDebug(`Received ICE candidate from ${data.from}`);
   if (peers[data.from]) {
     peers[data.from].signal({ candidate: data.candidate });
   } else {
-    logDebug(`No peer found for ICE candidate from ${data.from}`);
+    logDebug(`Peer not ready for ICE candidate from ${data.from}, queuing...`);
+    if (!pendingCandidates.current[data.from]) {
+      pendingCandidates.current[data.from] = [];
+    }
+    pendingCandidates.current[data.from].push(data.candidate);
   }
 };
 
