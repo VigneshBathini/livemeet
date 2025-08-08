@@ -1,26 +1,36 @@
 const express = require('express');
 const http = require('http');
-const socketIo = require('socket.io');
+const { Server } = require('socket.io');
+const cors = require('cors');
 
 const app = express();
 const server = http.createServer(app);
-const io = socketIo(server, {
+
+// CORS configuration
+app.use(cors({
+  origin: ['http://localhost:3000', 'https://livemeet-ribm.onrender.com', 'https://<your-frontend>.onrender.com'],
+  methods: ['GET', 'POST'],
+  credentials: true
+}));
+
+// Test endpoint
+app.get('/test', (req, res) => res.send('Server is running'));
+
+const io = new Server(server, {
   cors: {
-    origin: ["http://localhost:3001"], // Allow both localhost and network IP
-    methods: ["GET", "POST"],
+    origin: ['http://localhost:3000', 'https://livemeet-ribm.onrender.com', 'https://<your-frontend>.onrender.com'],
+    methods: ['GET', 'POST'],
     credentials: true
   }
 });
-
-app.use(express.static('public'));
 
 io.on('connection', (socket) => {
   console.log('New user connected:', socket.id);
 
   socket.on('join-room', (roomId, userId) => {
     socket.join(roomId);
-    socket.to(roomId).emit('user-joined', userId);
-    console.log(`${userId} joined room ${roomId}`);
+    socket.to(roomId).emit('user-joined', userId || socket.id); // Fallback to socket.id
+    console.log(`${userId || socket.id} joined room ${roomId}`);
   });
 
   socket.on('offer', (data) => {
@@ -41,6 +51,7 @@ io.on('connection', (socket) => {
   });
 });
 
-server.listen( 3001, () => {
-  console.log(`Server running on port ${process.env.PORT || 3001}`);
-}); // Listen on all interfaces
+const PORT =  3000;
+server.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
+});
