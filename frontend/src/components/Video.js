@@ -135,6 +135,7 @@ const Video = () => {
       }
     });
 
+    peer.answered = false;
     let offerSent = false;
     peer.on('signal', (signal) => {
       if (initiator && !offerSent) {
@@ -169,6 +170,9 @@ const Video = () => {
 
     peer.on('iceStateChange', (iceConnectionState) => {
       logDebug(`ICE connection state for ${userId}: ${iceConnectionState}`);
+      if (iceConnectionState === 'failed') {
+        logDebug(`ICE connection failed for ${userId}, attempting recovery`);
+      }
     });
 
     peer.on('error', (err) => logDebug(`Peer error (${userId}): ${err.message}`));
@@ -187,10 +191,10 @@ const Video = () => {
     if (!peers[data.from]) {
       const peer = createPeer(data.from, false);
       peer.signal(data.signal);
-      setPeers((prev) => ({ ...prev, [data.from]: peer }));
       peer.on('signal', (signal) => {
         logDebug(`Sending answer to ${data.from}`);
         socketRef.current.emit('answer', { signal, to: data.from });
+        setPeers((prev) => ({ ...prev, [data.from]: peer }));
       });
     } else {
       logDebug(`Peer already exists for ${data.from}, signaling existing peer`);
@@ -200,13 +204,16 @@ const Video = () => {
 
   const handleAnswer = (data) => {
     logDebug(`Received answer from ${data.from}`);
-    if (peers[data.from]) {
+    if (!peers[data.from]) {
+      logDebug(`Warning: No peer found for ${data.from}, this should not happen`);
+      return;
+    }
+    if (!peers[data.from].answered) {
       peers[data.from].signal(data.signal);
+      peers[data.from].answered = true;
+      logDebug(`Processed answer from ${data.from}`);
     } else {
-      logDebug(`Error: No peer found for ${data.from}, creating new peer`);
-      const peer = createPeer(data.from, false);
-      peer.signal(data.signal);
-      setPeers((prev) => ({ ...prev, [data.from]: peer }));
+      logDebug(`Ignoring duplicate answer from ${data.from}`);
     }
   };
 
