@@ -6,7 +6,7 @@ const app = express();
 const server = http.createServer(app);
 const io = socketIo(server, {
   cors: {
-    origin: "http://localhost:3001"|| "https://livemeet-ribm.onrender.com", // Allow both localhost and network IP
+    origin: "https://livemeet-ribm.onrender.com", // Allow both localhost and network IP
     methods: ["GET", "POST"],
     credentials: true
   }
@@ -41,4 +41,8 @@ io.on('connection', (socket) => {
   });
 });
 
-server.listen(3001, '0.0.0.0', () => console.log('Server running on port 3000')); // Listen on all interfaces
+//server.listen(3001, '0.0.0.0', () => console.log('Server running on port 3000')); // Listen on all interfaces
+
+server.listen(process.env.PORT || 3001, () => {
+  console.log(`Server running on port ${3001}`);
+});
