@@ -139,15 +139,18 @@ const Video = () => {
     peer.answered = false;
     let offerSent = false;
     peer.on('signal', (signal) => {
-      if (initiator && !offerSent) {
-        logDebug(`Sending offer to ${userId}`);
-        socketRef.current.emit('offer', { signal, to: userId });
-        offerSent = true;
-      } else if (!initiator) {
-        logDebug(`Sending answer to ${userId}`);
-        socketRef.current.emit('answer', { signal, to: userId });
-      }
-    });
+  if (signal.type === 'offer') {
+    logDebug(`Sending offer to ${userId}`);
+    socketRef.current.emit('offer', { signal, to: userId });
+  } else if (signal.type === 'answer') {
+    logDebug(`Sending answer to ${userId}`);
+    socketRef.current.emit('answer', { signal, to: userId });
+  } else if (signal.candidate) {
+    logDebug(`Sending ICE candidate to ${userId}`);
+    socketRef.current.emit('ice-candidate', { candidate: signal.candidate, to: userId });
+  }
+});
+
 
     peer.on('stream', (stream) => {
       logDebug(`Received stream from ${userId}`);
@@ -223,14 +226,16 @@ const Video = () => {
     }
   };
 
+  
+
   const handleIceCandidate = (data) => {
-    logDebug(`Received ICE candidate from ${data.from}`);
-    if (peers[data.from]) {
-      peers[data.from].signal({ candidate: data.candidate });
-    } else {
-      logDebug(`Error: No peer found for ICE candidate from ${data.from}`);
-    }
-  };
+  logDebug(`Received ICE candidate from ${data.from}`);
+  if (peers[data.from]) {
+    peers[data.from].signal({ candidate: data.candidate });
+  } else {
+    logDebug(`No peer found for ICE candidate from ${data.from}`);
+  }
+};
 
   const handleUserLeft = (userId) => {
     logDebug(`User left: ${userId}`);
