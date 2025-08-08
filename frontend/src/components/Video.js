@@ -112,6 +112,7 @@ const Video = () => {
   };
 
   const createPeer = (userId, initiator) => {
+    logDebug(`Creating peer for ${userId}, initiator: ${initiator}`);
     const peer = new SimplePeer({
       initiator,
       trickle: true,
@@ -181,7 +182,7 @@ const Video = () => {
   };
 
   const handleUserJoined = (userId) => {
-    logDebug(`User joined: ${userId}`);
+    logDebug(`User joined: ${userId}, current peers: ${Object.keys(peers)}`);
     const peer = createPeer(userId, true);
     setPeers((prev) => ({ ...prev, [userId]: peer }));
   };
@@ -191,10 +192,10 @@ const Video = () => {
     if (!peers[data.from]) {
       const peer = createPeer(data.from, false);
       peer.signal(data.signal);
+      setPeers((prev) => ({ ...prev, [data.from]: peer }));
       peer.on('signal', (signal) => {
         logDebug(`Sending answer to ${data.from}`);
         socketRef.current.emit('answer', { signal, to: data.from });
-        setPeers((prev) => ({ ...prev, [data.from]: peer }));
       });
     } else {
       logDebug(`Peer already exists for ${data.from}, signaling existing peer`);
@@ -203,9 +204,14 @@ const Video = () => {
   };
 
   const handleAnswer = (data) => {
-    logDebug(`Received answer from ${data.from}`);
+    logDebug(`Received answer from ${data.from}, current peers: ${Object.keys(peers)}`);
     if (!peers[data.from]) {
-      logDebug(`Warning: No peer found for ${data.from}, this should not happen`);
+      logDebug(`Warning: No peer found for ${data.from}, attempting recovery`);
+      const peer = createPeer(data.from, false);
+      peer.signal(data.signal);
+      setPeers((prev) => ({ ...prev, [data.from]: peer }));
+      peer.answered = true;
+      logDebug(`Recovered peer for ${data.from}`);
       return;
     }
     if (!peers[data.from].answered) {
