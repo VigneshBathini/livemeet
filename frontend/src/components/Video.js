@@ -25,6 +25,9 @@ const Video = () => {
   const [inRoom, setInRoom] = useState(false);
   const [peers, setPeers] = useState({});
   const [debugLog, setDebugLog] = useState([]);
+  const [isVideoOn, setIsVideoOn] = useState(true);
+  const [isAudioOn, setIsAudioOn] = useState(true);
+  const [isScreenSharing, setIsScreenSharing] = useState(false);
 
   const socketRef = useRef();
   const userVideoRef = useRef();
@@ -79,9 +82,12 @@ const Video = () => {
     const assignStream = () => {
       if (userVideoRef.current) {
         userVideoRef.current.srcObject = localStream;
+        userVideoRef.current.play().catch((err) => {
+          logDebug(`Error playing local video: ${err.message}`);
+        });
         logDebug('Local stream assigned to video element.');
       } else {
-        logDebug('Retrying stream assignment...');
+        logDebug('Retrying local stream assignment...');
         setTimeout(assignStream, 100);
       }
     };
@@ -98,8 +104,9 @@ const Video = () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
       setLocalStream(stream);
+      setIsVideoOn(true);
+      setIsAudioOn(true);
       logDebug('Local stream acquired successfully.');
-      // Log stream tracks to verify
       logDebug(`Local stream tracks: ${stream.getTracks().map(t => `${t.kind}:${t.enabled}`).join(', ')}`);
     } catch (err) {
       logDebug(`Error accessing media: ${err.name} - ${err.message}`);
@@ -115,6 +122,86 @@ const Video = () => {
     setInRoom(true);
   };
 
+  const toggleVideo = () => {
+    if (localStream) {
+      const videoTrack = localStream.getVideoTracks()[0];
+      if (videoTrack) {
+        videoTrack.enabled = !videoTrack.enabled;
+        setIsVideoOn(videoTrack.enabled);
+        logDebug(`Video track ${videoTrack.enabled ? 'enabled' : 'disabled'}`);
+        // Renegotiate peer connections
+        Object.keys(peersRef.current).forEach((userId) => {
+          renegotiatePeer(userId);
+        });
+      }
+    }
+  };
+
+  const toggleAudio = () => {
+    if (localStream) {
+      const audioTrack = localStream.getAudioTracks()[0];
+      if (audioTrack) {
+        audioTrack.enabled = !audioTrack.enabled;
+        setIsAudioOn(audioTrack.enabled);
+        logDebug(`Audio track ${audioTrack.enabled ? 'enabled' : 'disabled'}`);
+        // Renegotiate peer connections
+        Object.keys(peersRef.current).forEach((userId) => {
+          renegotiatePeer(userId);
+        });
+      }
+    }
+  };
+
+  const toggleScreenShare = async () => {
+    if (isScreenSharing) {
+      // Stop screen sharing, revert to camera
+      localStream.getTracks().forEach(track => track.stop());
+      const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+      setLocalStream(stream);
+      setIsScreenSharing(false);
+      logDebug('Switched back to camera stream.');
+      logDebug(`Local stream tracks: ${stream.getTracks().map(t => `${t.kind}:${t.enabled}`).join(', ')}`);
+    } else {
+      // Start screen sharing
+      try {
+        const stream = await navigator.mediaDevices.getDisplayMedia({ video: true });
+        setLocalStream(stream);
+        setIsScreenSharing(true);
+        logDebug('Screen sharing started.');
+        logDebug(`Local stream tracks: ${stream.getTracks().map(t => `${t.kind}:${t.enabled}`).join(', ')}`);
+        // Handle screen share ending (e.g., user stops sharing)
+        stream.getVideoTracks()[0].onended = () => {
+          toggleScreenShare(); // Revert to camera
+        };
+      } catch (err) {
+        logDebug(`Error starting screen share: ${err.message}`);
+        return;
+      }
+    }
+    // Renegotiate peer connections
+    Object.keys(peersRef.current).forEach((userId) => {
+      renegotiatePeer(userId);
+    });
+  };
+
+  const renegotiatePeer = (userId) => {
+    const peer = peersRef.current[userId];
+    if (!peer) return;
+
+    // Destroy existing peer and create a new one
+    peer.destroy();
+    delete peersRef.current[userId];
+    setPeers((prev) => {
+      const newPeers = { ...prev };
+      delete newPeers[userId];
+      return newPeers;
+    });
+
+    const newPeer = createPeer(userId, true);
+    peersRef.current[userId] = newPeer;
+    setPeers((prev) => ({ ...prev, [userId]: newPeer }));
+  };
+
   const createPeer = (userId, initiator) => {
     logDebug(`Creating peer for ${userId}, initiator: ${initiator}`);
     const peer = new SimplePeer({
@@ -126,7 +213,7 @@ const Video = () => {
           { urls: 'stun:stun.l.google.com:19302' },
           { urls: 'stun:stun1.l.google.com:19302' },
           {
-            urls: 'turn:open relay.metered.ca:80',
+            urls: 'turn:openrelay.metered.ca:80',
             username: 'openrelayproject',
             credential: 'openrelayproject',
           },
@@ -151,6 +238,7 @@ const Video = () => {
 
     peer.on('stream', (stream) => {
       logDebug(`Received stream from ${userId}, tracks: ${stream.getTracks().map(t => `${t.kind}:${t.enabled}`).join(', ')}`);
+      peersRef.current[userId].remoteStream = stream; // Store stream
       const assignPeerStream = (attempt = 1) => {
         if (peerVideoRefs.current[userId]) {
           peerVideoRefs.current[userId].srcObject = stream;
@@ -171,11 +259,14 @@ const Video = () => {
     peer.on('connect', () => logDebug(`Peer connection established with ${userId}`));
     peer.on('error', (err) => logDebug(`Peer error (${userId}): ${err.message}`));
     peer.on('close', () => logDebug(`Peer connection closed for ${userId}`));
+    peer.on('iceconnectionstatechange', () => {
+      logDebug(`ICE connection state for ${userId}: ${peer._pc.iceConnectionState}`);
+      if (peer._pc.iceConnectionState === 'disconnected' || peer._pc.iceConnectionState === 'failed') {
+        renegotiatePeer(userId);
+      }
+    });
 
-    // Store peer in peersRef immediately
     peersRef.current[userId] = peer;
-
-    // Process any pending candidates or answers
     if (pendingCandidates.current[userId]) {
       pendingCandidates.current[userId].forEach((signal) => {
         peer.signal(signal);
@@ -263,6 +354,17 @@ const Video = () => {
           </div>
         ) : (
           <div>
+            <div className="controls">
+              <button onClick={toggleVideo}>
+                {isVideoOn ? 'Turn Video Off' : 'Turn Video On'}
+              </button>
+              <button onClick={toggleAudio}>
+                {isAudioOn ? 'Mute Audio' : 'Unmute Audio'}
+              </button>
+              <button onClick={toggleScreenShare}>
+                {isScreenSharing ? 'Stop Screen Share' : 'Share Screen'}
+              </button>
+            </div>
             <div className="video-container">
               <div className="video-item">
                 <video
@@ -281,7 +383,6 @@ const Video = () => {
                       if (el && !peerVideoRefs.current[userId]) {
                         peerVideoRefs.current[userId] = el;
                         logDebug(`Peer video ref assigned for ${userId}: ${!!el}`);
-                        // Attempt to assign stream if already received
                         if (peersRef.current[userId]?.remoteStream) {
                           el.srcObject = peersRef.current[userId].remoteStream;
                           el.play().catch((err) => {
@@ -319,6 +420,15 @@ const Video = () => {
               display: flex;
               flex-direction: column;
               align-items: center;
+            }
+            .controls {
+              margin-bottom: 10px;
+              display: flex;
+              gap: 10px;
+            }
+            .controls button {
+              padding: 8px 16px;
+              cursor: pointer;
             }
           `}
         </style>
