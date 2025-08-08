@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect, useCallback } from 'react';
 import io from 'socket.io-client';
 import SimplePeer from 'simple-peer';
 
-// Use local server for testing, update to Render URL for production
+// Use local server for development, Render URL for production
 const SIGNALING_SERVER_URL = process.env.NODE_ENV === 'development' 
   ? 'http://localhost:5000' 
   : 'https://livemeet-server.onrender.com';
@@ -18,23 +18,27 @@ const Video = () => {
   const userVideoRef = useRef();
   const peerVideoRefs = useRef({});
 
-  // Debounced logging to prevent excessive state updates
+  // Debounced logging
   const logDebug = useCallback((msg) => {
     console.log(msg);
-    setDebugLog((prev) => [...prev, msg].slice(-50)); // Limit to last 50 logs
+    setDebugLog((prev) => [...prev, msg].slice(-50));
   }, []);
 
-  // Handle video stream assignment
+  // Assign stream with retry
   useEffect(() => {
-    if (localStream && userVideoRef.current) {
-      userVideoRef.current.srcObject = localStream;
-      logDebug('Local stream assigned to video element.');
-    } else if (!userVideoRef.current) {
-      logDebug('Error: userVideoRef is not assigned in useEffect.');
-    } else if (!localStream) {
-      logDebug('Error: localStream is not available.');
-    }
-  }, [localStream, logDebug]);
+    if (!localStream || !inRoom) return;
+
+    const assignStream = () => {
+      if (userVideoRef.current) {
+        userVideoRef.current.srcObject = localStream;
+        logDebug('Local stream assigned to video element.');
+      } else {
+        logDebug('Retrying stream assignment...');
+        setTimeout(assignStream, 100);
+      }
+    };
+    assignStream();
+  }, [localStream, inRoom, logDebug]);
 
   const joinRoom = async () => {
     if (!roomId.trim()) {
@@ -43,9 +47,8 @@ const Video = () => {
     }
     logDebug(`Joining room: ${roomId}`);
 
-    // Initialize Socket.IO
     socketRef.current = io(SIGNALING_SERVER_URL, {
-      transports: ['websocket'],
+      transports: ['websocket', 'polling'],
       reconnection: true,
       reconnectionAttempts: 5,
       reconnectionDelay: 1000,
@@ -57,17 +60,10 @@ const Video = () => {
     });
     socketRef.current.on('reconnect_failed', () => logDebug('Reconnection failed after 5 attempts'));
 
-    // Get media stream
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
       setLocalStream(stream);
       logDebug('Local stream acquired successfully.');
-      if (userVideoRef.current) {
-        userVideoRef.current.srcObject = stream;
-        logDebug('Local stream assigned to video element in joinRoom.');
-      } else {
-        logDebug('Warning: userVideoRef not assigned during stream acquisition.');
-      }
     } catch (err) {
       logDebug(`Error accessing media: ${err.name} - ${err.message}`);
       return;
@@ -77,7 +73,6 @@ const Video = () => {
     socketRef.current.on('offer', handleOffer);
     socketRef.current.on('answer', handleAnswer);
     socketRef.current.on('ice-candidate', handleIceCandidate);
-    socketRef.current.on('user-left', handleUserLeft);
     socketRef.current.emit('join-room', roomId);
     setInRoom(true);
   };
@@ -174,14 +169,7 @@ const Video = () => {
           <div className="video-container">
             <div className="video-item">
               <video
-                ref={(el) => {
-                  userVideoRef.current = el;
-                  console.log('userVideoRef assigned:', !!el);
-                  if (el && localStream) {
-                    el.srcObject = localStream;
-                    console.log('Local stream set in ref callback.');
-                  }
-                }}
+                ref={userVideoRef}
                 autoPlay
                 muted
                 playsInline
