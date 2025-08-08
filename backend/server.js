@@ -10,7 +10,7 @@ const io = socketIo(server, {
   },
 });
 
-app.use(express.static('frontend/build'));
+app.use(express.static(path.join(__dirname, '..', 'frontend', 'build')));
 
 const rooms = {};
 
