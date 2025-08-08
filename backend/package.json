@@ -1,14 +1,20 @@
 {
   "name": "backend",
   "version": "1.0.0",
-  "main": "index.js",
+  "description": "WebRTC backend with Express and Socket.IO, serving React frontend",
+  "main": "server.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "start": "node server.js",
+    "build": "cd ../frontend && npm install && npm run build"
   },
-  "keywords": [],
+  "keywords": [
+    "express",
+    "socket.io",
+    "webrtc",
+    "render-deployment"
+  ],
   "author": "",
   "license": "ISC",
-  "description": "",
   "dependencies": {
     "express": "^5.1.0",
     "socket.io": "^4.8.1"

@@ -1,18 +1,23 @@
 const express = require('express');
 const http = require('http');
 const socketIo = require('socket.io');
+const path = require('path');
 
 const app = express();
 const server = http.createServer(app);
 const io = socketIo(server, {
   cors: {
-    origin: ["http://localhost:3001", "http://192.168.1.144:3001"], // Allow both localhost and network IP
-    methods: ["GET", "POST"],
-    credentials: true
+    origin: "*", // For production, replace with your domain
+    methods: ["GET", "POST"]
   }
 });
 
-app.use(express.static('public'));
+// Serve React build
+app.use(express.static(path.join(__dirname, '../frontend/build')));
+
+app.get('*', (req, res) => {
+  res.sendFile(path.join(__dirname, '../frontend/build', 'index.html'));
+});
 
 io.on('connection', (socket) => {
   console.log('New user connected:', socket.id);
@@ -41,4 +46,5 @@ io.on('connection', (socket) => {
   });
 });
 
-server.listen(3000, '0.0.0.0', () => console.log('Server running on port 3000')); // Listen on all interfaces
+const PORT = process.env.PORT || 3000;
+server.listen(PORT, () => console.log(`Server running on port ${PORT}`));
