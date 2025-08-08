@@ -2,21 +2,21 @@ const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
 const cors = require('cors');
+const path = require('path');
 
 const app = express();
 const server = http.createServer(app);
 
+// Serve static files from the React frontend build folder
+app.use(express.static(path.join(__dirname, '..', 'frontend', 'build')));
+
 // CORS configuration
 app.use(cors({
-  origin: [ 'https://livemeet-ribm.onrender.com'],
+  origin: ['https://livemeet-ribm.onrender.com'],
   methods: ['GET', 'POST'],
   credentials: true,
   allowedHeaders: ['Content-Type', 'Authorization']
 }));
-
-// Test endpoints
-app.get('/test', (req, res) => res.send('Server is running'));
-app.get('/', (req, res) => res.send('Socket.IO server is running'));
 
 const io = new Server(server, {
   cors: {
@@ -25,6 +25,14 @@ const io = new Server(server, {
     credentials: true,
     allowedHeaders: ['Content-Type', 'Authorization']
   }
+});
+
+// Test endpoints (place below static file serving)
+app.get('/test', (req, res) => res.send('Server is running'));
+
+// Handle all other routes with React's index.html
+app.get('*', (req, res) => {
+  res.sendFile(path.join(__dirname, '..', 'frontend', 'build', 'index.html'));
 });
 
 io.on('connection', (socket) => {
