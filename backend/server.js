@@ -5,20 +5,24 @@ const path = require('path');
 
 const app = express();
 const server = http.createServer(app);
+
 const io = socketIo(server, {
   cors: {
-    origin: "*", // For production, replace with your domain
-    methods: ["GET", "POST"]
+    origin: '*', // Same backend+frontend deployment → '*' is fine
+    methods: ['GET', 'POST']
   }
 });
 
 // Serve React build
-app.use(express.static(path.join(__dirname, '../frontend/build')));
+const buildPath = path.join(__dirname, '../frontend/build');
+app.use(express.static(buildPath));
 
+// Catch-all route for React (avoids path-to-regexp errors in Express 5+)
 app.get('/*', (req, res) => {
-  res.sendFile(path.join(__dirname, '../frontend/build', 'index.html'));
+  res.sendFile(path.join(buildPath, 'index.html'));
 });
 
+// Socket.IO events
 io.on('connection', (socket) => {
   console.log('New user connected:', socket.id);
 
@@ -46,5 +50,8 @@ io.on('connection', (socket) => {
   });
 });
 
+// Port for Render
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+server.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
+});
