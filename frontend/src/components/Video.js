@@ -13,7 +13,8 @@ const Video = () => {
   const peerVideoRefs = useRef({});
 
   useEffect(() => {
-    socketRef.current = io('https://livemeet-ribm.onrender.com');
+    socketRef.current = io('http://localhost:3000'
+  || 'https://livemeet-ribm.onrender.com');
 
     navigator.mediaDevices.getUserMedia({ video: true, audio: true })
       .then(stream => {

@@ -41,4 +41,4 @@ io.on('connection', (socket) => {
   });
 });
 
-server.listen(3000, '0.0.0.0', () => console.log('Server running on port 3000')); // Listen on all interfaces
+server.listen(3001, '0.0.0.0', () => console.log('Server running on port 3000')); // Listen on all interfaces
