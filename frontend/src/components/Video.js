@@ -132,7 +132,7 @@ const Video = () => {
 
   const handleOffer = (data) => {
     logDebug(`Received offer from ${data.from}`);
-    const peer = createPeer(data.from, false); // Fix: initiator=false
+    const peer = createPeer(data.from, false);
     peer.signal(data.signal);
     setPeers((prev) => ({ ...prev, [data.from]: peer }));
   };

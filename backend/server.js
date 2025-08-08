@@ -10,17 +10,20 @@ const server = http.createServer(app);
 app.use(cors({
   origin: ['http://localhost:3000', 'https://livemeet-ribm.onrender.com', 'https://<your-frontend>.onrender.com'],
   methods: ['GET', 'POST'],
-  credentials: true
+  credentials: true,
+  allowedHeaders: ['Content-Type', 'Authorization']
 }));
 
-// Test endpoint
+// Test endpoints
 app.get('/test', (req, res) => res.send('Server is running'));
+app.get('/', (req, res) => res.send('Socket.IO server is running'));
 
 const io = new Server(server, {
   cors: {
     origin: ['http://localhost:3000', 'https://livemeet-ribm.onrender.com', 'https://<your-frontend>.onrender.com'],
     methods: ['GET', 'POST'],
-    credentials: true
+    credentials: true,
+    allowedHeaders: ['Content-Type', 'Authorization']
   }
 });
 
@@ -29,7 +32,7 @@ io.on('connection', (socket) => {
 
   socket.on('join-room', (roomId, userId) => {
     socket.join(roomId);
-    socket.to(roomId).emit('user-joined', userId || socket.id); // Fallback to socket.id
+    socket.to(roomId).emit('user-joined', userId || socket.id);
     console.log(`${userId || socket.id} joined room ${roomId}`);
   });
 
@@ -51,7 +54,7 @@ io.on('connection', (socket) => {
   });
 });
 
-const PORT =  3000;
-server.listen(PORT, () => {
+const PORT = 3000;
+server.listen(PORT, '0.0.0.0', () => {
   console.log(`Server running on port ${PORT}`);
 });
