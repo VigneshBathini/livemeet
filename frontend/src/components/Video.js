@@ -2,7 +2,6 @@ import React, { useState, useRef, useEffect, useCallback } from 'react';
 import io from 'socket.io-client';
 import SimplePeer from 'simple-peer';
 
-// Dynamic server URL
 const SIGNALING_SERVER_URL = 'https://livemeet-ribm.onrender.com';
 
 const Video = () => {
@@ -16,13 +15,19 @@ const Video = () => {
   const userVideoRef = useRef();
   const peerVideoRefs = useRef({});
 
-  // Debounced logging
   const logDebug = useCallback((msg) => {
     console.log(msg);
     setDebugLog((prev) => [...prev, msg].slice(-50));
   }, []);
 
-  // Initialize socket
+  useEffect(() => {
+    const isSupportedBrowser = !!window.RTCPeerConnection && !!navigator.mediaDevices.getUserMedia;
+    if (!isSupportedBrowser) {
+      logDebug('Warning: Your browser may not fully support WebRTC.');
+      alert('Please use a modern browser like Chrome or Firefox for video calls.');
+    }
+  }, [logDebug]);
+
   useEffect(() => {
     socketRef.current = io(SIGNALING_SERVER_URL, {
       transports: ['websocket', 'polling'],
@@ -49,7 +54,6 @@ const Video = () => {
     };
   }, [logDebug]);
 
-  // Assign local stream
   useEffect(() => {
     if (!localStream || !inRoom) return;
 
@@ -78,6 +82,11 @@ const Video = () => {
       logDebug('Local stream acquired successfully.');
     } catch (err) {
       logDebug(`Error accessing media: ${err.name} - ${err.message}`);
+      if (err.name === 'NotAllowedError') {
+        alert('Please grant camera and microphone permissions.');
+      } else if (err.name === 'NotFoundError') {
+        alert('No camera or microphone found. Please check your device.');
+      }
       return;
     }
 
@@ -112,9 +121,24 @@ const Video = () => {
       if (peerVideoRefs.current[userId]) {
         peerVideoRefs.current[userId].srcObject = stream;
         logDebug(`Stream assigned to video element for ${userId}`);
+        setPeers((prev) => ({ ...prev })); // Trigger re-render
       } else {
         logDebug(`Error: No video element for ${userId}`);
+        setTimeout(() => {
+          if (peerVideoRefs.current[userId]) {
+            peerVideoRefs.current[userId].srcObject = stream;
+            logDebug(`Stream assigned on retry for ${userId}`);
+          }
+        }, 500);
       }
+    });
+
+    peer.on('connect', () => {
+      logDebug(`Peer connection established with ${userId}`);
+    });
+
+    peer.on('iceStateChange', (iceConnectionState) => {
+      logDebug(`ICE connection state for ${userId}: ${iceConnectionState}`);
     });
 
     peer.on('error', (err) => logDebug(`Peer error (${userId}): ${err.message}`));
@@ -193,7 +217,7 @@ const Video = () => {
                 <video
                   ref={(el) => {
                     peerVideoRefs.current[userId] = el;
-                    console.log(`Peer video ref assigned for ${userId}:`, !!el);
+                    logDebug(`Peer video ref assigned for ${userId}: ${!!el}`);
                   }}
                   autoPlay
                   playsInline
