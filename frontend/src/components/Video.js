@@ -99,6 +99,8 @@ const Video = () => {
       const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
       setLocalStream(stream);
       logDebug('Local stream acquired successfully.');
+      // Log stream tracks to verify
+      logDebug(`Local stream tracks: ${stream.getTracks().map(t => `${t.kind}:${t.enabled}`).join(', ')}`);
     } catch (err) {
       logDebug(`Error accessing media: ${err.name} - ${err.message}`);
       if (err.name === 'NotAllowedError') {
@@ -124,7 +126,7 @@ const Video = () => {
           { urls: 'stun:stun.l.google.com:19302' },
           { urls: 'stun:stun1.l.google.com:19302' },
           {
-            urls: 'turn:openrelay.metered.ca:80',
+            urls: 'turn:open relay.metered.ca:80',
             username: 'openrelayproject',
             credential: 'openrelayproject',
           },
@@ -148,20 +150,27 @@ const Video = () => {
     });
 
     peer.on('stream', (stream) => {
-      logDebug(`Received stream from ${userId}`);
-      if (peerVideoRefs.current[userId]) {
-        peerVideoRefs.current[userId].srcObject = stream;
-      } else {
-        setTimeout(() => {
-          if (peerVideoRefs.current[userId]) {
-            peerVideoRefs.current[userId].srcObject = stream;
-          }
-        }, 500);
-      }
+      logDebug(`Received stream from ${userId}, tracks: ${stream.getTracks().map(t => `${t.kind}:${t.enabled}`).join(', ')}`);
+      const assignPeerStream = (attempt = 1) => {
+        if (peerVideoRefs.current[userId]) {
+          peerVideoRefs.current[userId].srcObject = stream;
+          peerVideoRefs.current[userId].play().catch((err) => {
+            logDebug(`Error playing video for ${userId}: ${err.message}`);
+          });
+          logDebug(`Stream assigned to video element for ${userId}`);
+        } else if (attempt <= 5) {
+          logDebug(`Video element for ${userId} not ready, retrying (${attempt}/5)...`);
+          setTimeout(() => assignPeerStream(attempt + 1), 500);
+        } else {
+          logDebug(`Failed to assign stream for ${userId}: video element not found after 5 attempts`);
+        }
+      };
+      assignPeerStream();
     });
 
     peer.on('connect', () => logDebug(`Peer connection established with ${userId}`));
     peer.on('error', (err) => logDebug(`Peer error (${userId}): ${err.message}`));
+    peer.on('close', () => logDebug(`Peer connection closed for ${userId}`));
 
     // Store peer in peersRef immediately
     peersRef.current[userId] = peer;
@@ -232,7 +241,10 @@ const Video = () => {
         delete newPeers[userId];
         return newPeers;
       });
-      delete peerVideoRefs.current[userId];
+      if (peerVideoRefs.current[userId]) {
+        peerVideoRefs.current[userId].srcObject = null;
+        delete peerVideoRefs.current[userId];
+      }
     }
   };
 
@@ -269,6 +281,13 @@ const Video = () => {
                       if (el && !peerVideoRefs.current[userId]) {
                         peerVideoRefs.current[userId] = el;
                         logDebug(`Peer video ref assigned for ${userId}: ${!!el}`);
+                        // Attempt to assign stream if already received
+                        if (peersRef.current[userId]?.remoteStream) {
+                          el.srcObject = peersRef.current[userId].remoteStream;
+                          el.play().catch((err) => {
+                            logDebug(`Error playing video for ${userId}: ${err.message}`);
+                          });
+                        }
                       }
                     }}
                     autoPlay
