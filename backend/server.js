@@ -1,57 +1,44 @@
-// server.js
 const express = require('express');
 const http = require('http');
-const { Server } = require('socket.io');
-const cors = require('cors');
+const socketIo = require('socket.io');
 
 const app = express();
 const server = http.createServer(app);
-
-app.use(cors({ origin: '*' }));
-
-const io = new Server(server, {
+const io = socketIo(server, {
   cors: {
-    origin: '*',
-    methods: ['GET', 'POST']
+    origin: ["http://localhost:3001", "https://livemeet-ribm.onrender.com"], // Allow both localhost and network IP
+    methods: ["GET", "POST"],
+    credentials: true
   }
 });
 
+app.use(express.static('public'));
+
 io.on('connection', (socket) => {
-  console.log('New connection:', socket.id);
+  console.log('New user connected:', socket.id);
 
-  // Join a room
-  socket.on('join-room', (roomId) => {
+  socket.on('join-room', (roomId, userId) => {
     socket.join(roomId);
-    console.log(`Socket ${socket.id} joined room ${roomId}`);
-
-    // Notify others in the room
-    socket.to(roomId).emit('user-joined', socket.id);
+    socket.to(roomId).emit('user-joined', userId);
+    console.log(`${userId} joined room ${roomId}`);
   });
 
-  // Offer from initiator
-  socket.on('offer', ({ signal, to }) => {
-    console.log(`Offer from ${socket.id} to ${to}`);
-    io.to(to).emit('offer', { signal, from: socket.id });
+  socket.on('offer', (data) => {
+    socket.to(data.to).emit('offer', { signal: data.signal, from: socket.id });
   });
 
-  // Answer from non-initiator
-  socket.on('answer', ({ signal, to }) => {
-    console.log(`Answer from ${socket.id} to ${to}`);
-    io.to(to).emit('answer', { signal, from: socket.id });
+  socket.on('answer', (data) => {
+    socket.to(data.to).emit('answer', { signal: data.signal, from: socket.id });
   });
 
-  // ICE candidate relay
-  socket.on('ice-candidate', ({ candidate, to }) => {
-    console.log(`ICE candidate from ${socket.id} to ${to}`);
-    io.to(to).emit('ice-candidate', { candidate, from: socket.id });
+  socket.on('ice-candidate', (data) => {
+    socket.to(data.to).emit('ice-candidate', { candidate: data.candidate, from: socket.id });
   });
 
-  // Handle user disconnect
   socket.on('disconnect', () => {
-    console.log(`Socket ${socket.id} disconnected`);
-    io.emit('user-left', socket.id);
+    socket.broadcast.emit('user-left', socket.id);
+    console.log('User disconnected:', socket.id);
   });
 });
 
-const PORT = process.env.PORT || 5000;
-server.listen(PORT, () => console.log(`Signaling server running on port ${PORT}`));
+server.listen(3000, '0.0.0.0', () => console.log('Server running on port 3000')); // Listen on all interfaces
