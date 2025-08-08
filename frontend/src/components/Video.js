@@ -181,40 +181,39 @@ const Video = () => {
   };
 
   const handleOffer = (data) => {
-    logDebug(`Received offer from ${data.from}`);
-    if (!peers[data.from]) {
-      const peer = createPeer(data.from, false);
-      peer.signal(data.signal);
-      setPeers((prev) => ({ ...prev, [data.from]: peer }));
-      peer.on('signal', (signal) => {
-        logDebug(`Sending answer to ${data.from}`);
-        socketRef.current.emit('answer', { signal, to: data.from });
-      });
-    } else {
-      logDebug(`Peer already exists for ${data.from}, signaling existing peer`);
-      peers[data.from].signal(data.signal);
-    }
-  };
+  logDebug(`Received offer from ${data.from}`);
+  if (!peers[data.from]) {
+    const peer = createPeer(data.from, false);
+    setPeers(prev => {
+      const updated = { ...prev, [data.from]: peer };
+      return updated;
+    });
+
+    if (pendingCandidates.current[data.from]) {
+  pendingCandidates.current[data.from].forEach(candidate => {
+    peer.signal({ candidate });
+  });
+  delete pendingCandidates.current[data.from];
+}
+
+    peer.signal(data.signal);
+  } else {
+    peers[data.from].signal(data.signal);
+  }
+};
 
   const handleAnswer = (data) => {
-    logDebug(`Received answer from ${data.from}, current peers: ${Object.keys(peers)}`);
-    if (!peers[data.from]) {
-      logDebug(`Warning: No peer found for ${data.from}, attempting recovery`);
-      const peer = createPeer(data.from, false);
-      peer.signal(data.signal);
-      setPeers((prev) => ({ ...prev, [data.from]: peer }));
-      peer.answered = true;
-      logDebug(`Recovered peer for ${data.from}`);
-      return;
+  logDebug(`Received answer from ${data.from}`);
+  if (peers[data.from]) {
+    peers[data.from].signal(data.signal);
+  } else {
+    logDebug(`No peer for ${data.from}, queuing answer until peer is created.`);
+    if (!pendingCandidates.current[data.from]) {
+      pendingCandidates.current[data.from] = [];
     }
-    if (!peers[data.from].answered) {
-      peers[data.from].signal(data.signal);
-      peers[data.from].answered = true;
-      logDebug(`Processed answer from ${data.from}`);
-    } else {
-      logDebug(`Ignoring duplicate answer from ${data.from}`);
-    }
-  };
+    pendingCandidates.current[data.from].push({ answer: data.signal });
+  }
+};
 
   
 
