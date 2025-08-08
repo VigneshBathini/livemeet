@@ -4,6 +4,21 @@ import SimplePeer from 'simple-peer';
 
 const SIGNALING_SERVER_URL = 'https://livemeet-ribm.onrender.com';
 
+class ErrorBoundary extends React.Component {
+  state = { hasError: false };
+
+  static getDerivedStateFromError(error) {
+    return { hasError: true };
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return <h1>Something went wrong. Please refresh the page.</h1>;
+    }
+    return this.props.children;
+  }
+}
+
 const Video = () => {
   const [roomId, setRoomId] = useState('');
   const [localStream, setLocalStream] = useState(null);
@@ -106,6 +121,11 @@ const Video = () => {
             urls: 'turn:openrelay.metered.ca:80',
             username: 'openrelayproject',
             credential: 'openrelayproject'
+          },
+          {
+            urls: 'turn:openrelay.metered.ca:443?transport=tcp',
+            username: 'openrelayproject',
+            credential: 'openrelayproject'
           }
         ]
       }
@@ -121,7 +141,6 @@ const Video = () => {
       if (peerVideoRefs.current[userId]) {
         peerVideoRefs.current[userId].srcObject = stream;
         logDebug(`Stream assigned to video element for ${userId}`);
-        setPeers((prev) => ({ ...prev })); // Trigger re-render
       } else {
         logDebug(`Error: No video element for ${userId}`);
         setTimeout(() => {
@@ -181,77 +200,84 @@ const Video = () => {
     logDebug(`User left: ${userId}`);
     if (peers[userId]) {
       peers[userId].destroy();
-      delete peers[userId];
+      setPeers((prev) => {
+        const newPeers = { ...prev };
+        delete newPeers[userId];
+        return newPeers;
+      });
       delete peerVideoRefs.current[userId];
-      setPeers({ ...peers });
     }
   };
 
   return (
-    <div>
-      {!inRoom ? (
-        <div className="join-room">
-          <input
-            type="text"
-            value={roomId}
-            onChange={(e) => setRoomId(e.target.value)}
-            placeholder="Enter Room ID"
-          />
-          <button onClick={joinRoom}>Join Room</button>
-        </div>
-      ) : (
-        <div>
-          <div className="video-container">
-            <div className="video-item">
-              <video
-                ref={userVideoRef}
-                autoPlay
-                muted
-                playsInline
-                style={{ width: '320px', height: '240px', border: '1px solid #000', background: '#000' }}
-              />
-              <div>Your Video</div>
-            </div>
-            {Object.keys(peers).map((userId) => (
-              <div className="video-item" key={userId}>
+    <ErrorBoundary>
+      <div>
+        {!inRoom ? (
+          <div className="join-room">
+            <input
+              type="text"
+              value={roomId}
+              onChange={(e) => setRoomId(e.target.value)}
+              placeholder="Enter Room ID"
+            />
+            <button onClick={joinRoom}>Join Room</button>
+          </div>
+        ) : (
+          <div>
+            <div className="video-container">
+              <div className="video-item">
                 <video
-                  ref={(el) => {
-                    peerVideoRefs.current[userId] = el;
-                    logDebug(`Peer video ref assigned for ${userId}: ${!!el}`);
-                  }}
+                  ref={userVideoRef}
                   autoPlay
+                  muted
                   playsInline
                   style={{ width: '320px', height: '240px', border: '1px solid #000', background: '#000' }}
                 />
-                <div>Peer: {userId}</div>
+                <div>Your Video</div>
               </div>
-            ))}
-          </div>
-          <div className="debug">
-            <h4>Debug Log:</h4>
-            <ul>
-              {debugLog.map((log, index) => (
-                <li key={index}>{log}</li>
+              {Object.keys(peers).map((userId) => (
+                <div className="video-item" key={userId}>
+                  <video
+                    ref={(el) => {
+                      if (el && !peerVideoRefs.current[userId]) {
+                        peerVideoRefs.current[userId] = el;
+                        logDebug(`Peer video ref assigned for ${userId}: ${!!el}`);
+                      }
+                    }}
+                    autoPlay
+                    playsInline
+                    style={{ width: '320px', height: '240px', border: '1px solid #000', background: '#000' }}
+                  />
+                  <div>Peer: {userId}</div>
+                </div>
               ))}
-            </ul>
+            </div>
+            <div className="debug">
+              <h4>Debug Log:</h4>
+              <ul>
+                {debugLog.map((log, index) => (
+                  <li key={index}>{log}</li>
+                ))}
+              </ul>
+            </div>
           </div>
-        </div>
-      )}
-      <style>
-        {`
-          .video-container {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 10px;
-          }
-          .video-item {
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-          }
-        `}
-      </style>
-    </div>
+        )}
+        <style>
+          {`
+            .video-container {
+              display: flex;
+              flex-wrap: wrap;
+              gap: 10px;
+            }
+            .video-item {
+              display: flex;
+              flex-direction: column;
+              align-items: center;
+            }
+          `}
+        </style>
+      </div>
+    </ErrorBoundary>
   );
 };
 
