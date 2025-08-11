@@ -36,9 +36,8 @@ const Video = () => {
   const peersRef = useRef({});
 
   const logDebug = useCallback((msg) => {
-    const timestamp = new Date().toISOString();
-    console.log(`[${timestamp}] ${msg}`);
-    setDebugLog((prev) => [...prev, `[${timestamp}] ${msg}`].slice(-50));
+    console.log(msg);
+    setDebugLog((prev) => [...prev, msg].slice(-50));
   }, []);
 
   useEffect(() => {
@@ -63,13 +62,7 @@ const Video = () => {
       logDebug(`Socket connection error: ${err.message}, type: ${err.type}, code: ${err.code}, description: ${err.description || 'N/A'}`);
       console.error('Socket connect error:', err);
     });
-    socketRef.current.on('reconnect', (attempt) => {
-      logDebug(`Reconnected after attempt ${attempt}`);
-      if (inRoom) {
-        logDebug('Socket reconnected, rejoining room...');
-        socketRef.current.emit('join-room', roomId, socketRef.current.id);
-      }
-    });
+    socketRef.current.on('reconnect', (attempt) => logDebug(`Reconnected after attempt ${attempt}`));
     socketRef.current.on('reconnect_failed', () => logDebug('Reconnection failed after maximum attempts'));
 
     socketRef.current.on('user-joined', handleUserJoined);
@@ -80,34 +73,29 @@ const Video = () => {
 
     return () => {
       socketRef.current.disconnect();
-      Object.keys(peersRef.current).forEach((userId) => {
-        peersRef.current[userId].destroy();
-        delete peersRef.current[userId];
-      });
-      if (localStream) {
-        localStream.getTracks().forEach((track) => track.stop());
-      }
-      setPeers({});
-      setLocalStream(null);
-      peerVideoRefs.current = {};
-      pendingCandidates.current = {};
-      logDebug('Component unmounted, cleaned up resources.');
     };
-  }, [logDebug, inRoom, roomId]);
+  }, [logDebug]);
 
   useEffect(() => {
-    if (!localStream || !inRoom || !userVideoRef.current) return;
+    if (!localStream || !inRoom) return;
 
-    userVideoRef.current.srcObject = localStream;
-    userVideoRef.current.play().catch((err) => {
-      logDebug(`Error playing local video: ${err.message}`);
-    });
-    logDebug('Local stream assigned to video element.');
+    const assignStream = () => {
+      if (userVideoRef.current) {
+        userVideoRef.current.srcObject = localStream;
+        userVideoRef.current.play().catch((err) => {
+          logDebug(`Error playing local video: ${err.message}`);
+        });
+        logDebug('Local stream assigned to video element.');
+      } else {
+        logDebug('Retrying local stream assignment...');
+        setTimeout(assignStream, 100);
+      }
+    };
+    assignStream();
   }, [localStream, inRoom, logDebug]);
 
   const joinRoom = async () => {
     if (!roomId.trim()) {
-      alert('Please enter a Room ID.');
       logDebug('Please enter a Room ID.');
       return;
     }
@@ -119,15 +107,13 @@ const Video = () => {
       setIsVideoOn(true);
       setIsAudioOn(true);
       logDebug('Local stream acquired successfully.');
-      logDebug(`Local stream tracks: ${stream.getTracks().map((t) => `${t.kind}:${t.enabled}`).join(', ')}`);
+      logDebug(`Local stream tracks: ${stream.getTracks().map(t => `${t.kind}:${t.enabled}`).join(', ')}`);
     } catch (err) {
       logDebug(`Error accessing media: ${err.name} - ${err.message}`);
       if (err.name === 'NotAllowedError') {
-        alert('Please grant camera and microphone permissions to join the room.');
+        alert('Please grant camera and microphone permissions.');
       } else if (err.name === 'NotFoundError') {
-        alert('No camera or microphone found. Please check your device and try again.');
-      } else {
-        alert(`Failed to access media: ${err.message}. Please try again.`);
+        alert('No camera or microphone found. Please check your device.');
       }
       return;
     }
@@ -136,107 +122,102 @@ const Video = () => {
     setInRoom(true);
   };
 
-  const toggleVideo = () => {
-    if (localStream) {
-      const videoTrack = localStream.getVideoTracks()[0];
-      if (videoTrack) {
-        videoTrack.enabled = !videoTrack.enabled;
-        setIsVideoOn(videoTrack.enabled);
-        logDebug(`Video track ${videoTrack.enabled ? 'enabled' : 'disabled'}`);
-        Object.keys(peersRef.current).forEach((userId) => {
-          const peer = peersRef.current[userId];
-          const sender = peer._pc.getSenders().find((s) => s.track?.kind === 'video');
-          if (sender) {
-            sender.replaceTrack(videoTrack.enabled ? videoTrack : null).catch((err) => {
-              logDebug(`Error replacing video track for ${userId}: ${err.message}`);
-            });
-          }
-        });
-      }
+ const toggleVideo = () => {
+  if (localStream) {
+    const videoTrack = localStream.getVideoTracks()[0];
+    if (videoTrack) {
+      videoTrack.enabled = !videoTrack.enabled;
+      setIsVideoOn(videoTrack.enabled);
+      logDebug(`Video track ${videoTrack.enabled ? 'enabled' : 'disabled'}`);
     }
-  };
+  }
+};
 
-  const toggleAudio = () => {
-    if (localStream) {
-      const audioTrack = localStream.getAudioTracks()[0];
-      if (audioTrack) {
-        audioTrack.enabled = !audioTrack.enabled;
-        setIsAudioOn(audioTrack.enabled);
-        logDebug(`Audio track ${audioTrack.enabled ? 'enabled' : 'disabled'}`);
-        Object.keys(peersRef.current).forEach((userId) => {
-          const peer = peersRef.current[userId];
-          const sender = peer._pc.getSenders().find((s) => s.track?.kind === 'audio');
-          if (sender) {
-            sender.replaceTrack(audioTrack.enabled ? audioTrack : null).catch((err) => {
-              logDebug(`Error replacing audio track for ${userId}: ${err.message}`);
-            });
-          }
-        });
-      }
+
+const toggleAudio = () => {
+  if (localStream) {
+    const audioTrack = localStream.getAudioTracks()[0];
+    if (audioTrack) {
+      audioTrack.enabled = !audioTrack.enabled;
+      setIsAudioOn(audioTrack.enabled);
+      logDebug(`Audio track ${audioTrack.enabled ? 'enabled' : 'disabled'}`);
     }
-  };
+  }
+};
 
   const toggleScreenShare = async () => {
-    if (isScreenSharing) {
-      localStream.getTracks().forEach((track) => track.stop());
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-        setLocalStream(stream);
-        setIsScreenSharing(false);
-        logDebug('Switched back to camera stream.');
-        logDebug(`Local stream tracks: ${stream.getTracks().map((t) => `${t.kind}:${t.enabled}`).join(', ')}`);
-        Object.keys(peersRef.current).forEach((userId) => {
-          const peer = peersRef.current[userId];
-          const videoTrack = stream.getVideoTracks()[0];
-          const audioTrack = stream.getAudioTracks()[0];
-          const videoSender = peer._pc.getSenders().find((s) => s.track?.kind === 'video');
-          const audioSender = peer._pc.getSenders().find((s) => s.track?.kind === 'audio');
-          if (videoSender && videoTrack) {
-            videoSender.replaceTrack(videoTrack).catch((err) => {
-              logDebug(`Error replacing video track for ${userId}: ${err.message}`);
-            });
-          }
-          if (audioSender && audioTrack) {
-            audioSender.replaceTrack(audioTrack).catch((err) => {
-              logDebug(`Error replacing audio track for ${userId}: ${err.message}`);
-            });
-          }
-        });
-      } catch (err) {
-        logDebug(`Error reverting to camera stream: ${err.message}`);
-        alert('Failed to revert to camera stream. Please check permissions.');
-        return;
+  if (!isScreenSharing) {
+    try {
+      const screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
+      const screenTrack = screenStream.getVideoTracks()[0];
+
+      Object.values(peersRef.current).forEach(peer => {
+        const sender = peer._pc.getSenders().find(s => s.track?.kind === 'video');
+        if (sender) sender.replaceTrack(screenTrack);
+      });
+
+      // Show the screen locally
+      if (userVideoRef.current) {
+        userVideoRef.current.srcObject = screenStream;
       }
-    } else {
-      try {
-        const stream = await navigator.mediaDevices.getDisplayMedia({ video: true });
-        setLocalStream(stream);
-        setIsScreenSharing(true);
-        logDebug('Screen sharing started.');
-        logDebug(`Local stream tracks: ${stream.getTracks().map((t) => `${t.kind}:${t.enabled}`).join(', ')}`);
-        stream.getVideoTracks()[0].onended = () => {
-          toggleScreenShare();
-        };
-        Object.keys(peersRef.current).forEach((userId) => {
-          const peer = peersRef.current[userId];
-          const videoTrack = stream.getVideoTracks()[0];
-          const videoSender = peer._pc.getSenders().find((s) => s.track?.kind === 'video');
-          if (videoSender && videoTrack) {
-            videoSender.replaceTrack(videoTrack).catch((err) => {
-              logDebug(`Error replacing video track for ${userId}: ${err.message}`);
-            });
-          }
-        });
-      } catch (err) {
-        logDebug(`Error starting screen share: ${err.message}`);
-        alert('Failed to start screen sharing. Please try again.');
-        return;
-      }
+
+      setIsScreenSharing(true);
+
+      // When screen sharing stops
+      screenTrack.onended = () => {
+        revertToCamera();
+      };
+
+    } catch (err) {
+      logDebug(`Error starting screen share: ${err.message}`);
     }
+  } else {
+    revertToCamera();
+  }
+};
+
+
+const revertToCamera = async () => {
+  try {
+    const cameraStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+    const cameraTrack = cameraStream.getVideoTracks()[0];
+
+    Object.values(peersRef.current).forEach(peer => {
+      const sender = peer._pc.getSenders().find(s => s.track?.kind === 'video');
+      if (sender) sender.replaceTrack(cameraTrack);
+    });
+
+    if (userVideoRef.current) {
+      userVideoRef.current.srcObject = cameraStream;
+    }
+
+    setLocalStream(cameraStream);
+    setIsScreenSharing(false);
+  } catch (err) {
+    logDebug(`Error reverting to camera: ${err.message}`);
+  }
+};
+
+  const renegotiatePeer = (userId) => {
+    const peer = peersRef.current[userId];
+    if (!peer) return;
+
+    // Destroy existing peer and create a new one
+    peer.destroy();
+    delete peersRef.current[userId];
+    setPeers((prev) => {
+      const newPeers = { ...prev };
+      delete newPeers[userId];
+      return newPeers;
+    });
+
+    const newPeer = createPeer(userId, true);
+    peersRef.current[userId] = newPeer;
+    setPeers((prev) => ({ ...prev, [userId]: newPeer }));
   };
 
-  const createPeer = (userId, initiator, retryCount = 0) => {
-    logDebug(`Creating peer for ${userId}, initiator: ${initiator}, retry: ${retryCount}`);
+  const createPeer = (userId, initiator) => {
+    logDebug(`Creating peer for ${userId}, initiator: ${initiator}`);
     const peer = new SimplePeer({
       initiator,
       trickle: true,
@@ -260,7 +241,6 @@ const Video = () => {
     });
 
     peer.on('signal', (signal) => {
-      logDebug(`Emitting signal for ${userId}: ${signal.type || 'candidate'}`);
       if (signal.type === 'offer') {
         socketRef.current.emit('offer', { signal, to: userId });
       } else if (signal.type === 'answer') {
@@ -271,62 +251,39 @@ const Video = () => {
     });
 
     peer.on('stream', (stream) => {
-      logDebug(`Received stream from ${userId}, tracks: ${stream.getTracks().map((t) => `${t.kind}:${t.enabled}`).join(', ')}`);
-      peersRef.current[userId].remoteStream = stream;
-      if (peerVideoRefs.current[userId]) {
-        peerVideoRefs.current[userId].srcObject = stream;
-        peerVideoRefs.current[userId].play().catch((err) => {
-          logDebug(`Error playing video for ${userId}: ${err.message}`);
-        });
-        logDebug(`Stream assigned to video element for ${userId}`);
-      } else {
-        logDebug(`Video element for ${userId} not ready, will assign when available`);
-      }
+      logDebug(`Received stream from ${userId}, tracks: ${stream.getTracks().map(t => `${t.kind}:${t.enabled}`).join(', ')}`);
+      peersRef.current[userId].remoteStream = stream; // Store stream
+      const assignPeerStream = (attempt = 1) => {
+        if (peerVideoRefs.current[userId]) {
+          peerVideoRefs.current[userId].srcObject = stream;
+          peerVideoRefs.current[userId].play().catch((err) => {
+            logDebug(`Error playing video for ${userId}: ${err.message}`);
+          });
+          logDebug(`Stream assigned to video element for ${userId}`);
+        } else if (attempt <= 5) {
+          logDebug(`Video element for ${userId} not ready, retrying (${attempt}/5)...`);
+          setTimeout(() => assignPeerStream(attempt + 1), 500);
+        } else {
+          logDebug(`Failed to assign stream for ${userId}: video element not found after 5 attempts`);
+        }
+      };
+      assignPeerStream();
     });
 
     peer.on('connect', () => logDebug(`Peer connection established with ${userId}`));
-    peer.on('error', (err) => {
-      logDebug(`Peer error (${userId}): ${err.message}`);
-      if (retryCount < 3) {
-        logDebug(`Retrying peer connection for ${userId}, attempt ${retryCount + 1}`);
-        setTimeout(() => {
-          handleUserLeft(userId);
-          handleUserJoined(userId);
-        }, 1000);
-      } else {
-        logDebug(`Max retries reached for ${userId}`);
-        alert(`Failed to connect to peer ${userId}. Please try again.`);
-      }
-    });
-    peer.on('close', () => {
-      logDebug(`Peer connection closed for ${userId}`);
-      handleUserLeft(userId);
-    });
+    peer.on('error', (err) => logDebug(`Peer error (${userId}): ${err.message}`));
+    peer.on('close', () => logDebug(`Peer connection closed for ${userId}`));
     peer.on('iceconnectionstatechange', () => {
       logDebug(`ICE connection state for ${userId}: ${peer._pc.iceConnectionState}`);
       if (peer._pc.iceConnectionState === 'disconnected' || peer._pc.iceConnectionState === 'failed') {
-        if (retryCount < 3) {
-          logDebug(`Retrying peer connection for ${userId}, attempt ${retryCount + 1}`);
-          setTimeout(() => {
-            handleUserLeft(userId);
-            handleUserJoined(userId);
-          }, 1000);
-        } else {
-          logDebug(`Max retries reached for ${userId}`);
-          alert(`Connection to peer ${userId} failed. Please try again.`);
-        }
+        renegotiatePeer(userId);
       }
     });
 
     peersRef.current[userId] = peer;
     if (pendingCandidates.current[userId]) {
       pendingCandidates.current[userId].forEach((signal) => {
-        if ((signal.type === 'offer' && peer._pc.signalingState === 'stable') ||
-            (signal.type === 'answer' && peer._pc.signalingState === 'have-local-offer') ||
-            (signal.candidate && peer._pc.remoteDescription)) {
-          logDebug(`Applying queued signal for ${userId}: ${signal.type || 'candidate'}`);
-          peer.signal(signal);
-        }
+        peer.signal(signal);
       });
       delete pendingCandidates.current[userId];
     }
@@ -336,12 +293,8 @@ const Video = () => {
 
   const handleUserJoined = (userId) => {
     logDebug(`User joined: ${userId}, current peers: ${Object.keys(peersRef.current)}`);
-    if (!peersRef.current[userId]) {
-      const peer = createPeer(userId, true);
-      setPeers((prev) => ({ ...prev, [userId]: peer }));
-    } else {
-      logDebug(`Peer already exists for ${userId}, skipping creation`);
-    }
+    const peer = createPeer(userId, true);
+    setPeers((prev) => ({ ...prev, [userId]: peer }));
   };
 
   const handleOffer = (data) => {
@@ -352,26 +305,16 @@ const Video = () => {
       peersRef.current[data.from] = peer;
       setPeers((prev) => ({ ...prev, [data.from]: peer }));
     }
-    if (peer._pc.signalingState === 'stable') {
-      logDebug(`Applying offer from ${data.from}`);
-      peer.signal(data.signal);
-    } else {
-      logDebug(`Queuing offer from ${data.from} due to signaling state: ${peer._pc.signalingState}`);
-      if (!pendingCandidates.current[data.from]) {
-        pendingCandidates.current[data.from] = [];
-      }
-      pendingCandidates.current[data.from].push(data.signal);
-    }
+    peer.signal(data.signal);
   };
 
   const handleAnswer = (data) => {
     logDebug(`Received answer from ${data.from}`);
     const peer = peersRef.current[data.from];
-    if (peer && peer._pc.signalingState === 'have-local-offer') {
-      logDebug(`Applying answer from ${data.from}`);
+    if (peer) {
       peer.signal(data.signal);
     } else {
-      logDebug(`No peer or invalid signaling state for answer from ${data.from}: ${peer?._pc.signalingState || 'no peer'}`);
+      logDebug(`No peer for ${data.from}, queuing answer...`);
       if (!pendingCandidates.current[data.from]) {
         pendingCandidates.current[data.from] = [];
       }
@@ -382,8 +325,7 @@ const Video = () => {
   const handleIceCandidate = (data) => {
     logDebug(`Received ICE candidate from ${data.from}`);
     const peer = peersRef.current[data.from];
-    if (peer && peer._pc.remoteDescription) {
-      logDebug(`Applying ICE candidate from ${data.from}`);
+    if (peer) {
       peer.signal({ candidate: data.candidate });
     } else {
       logDebug(`Peer not ready for ICE candidate from ${data.from}, queuing...`);
@@ -452,13 +394,15 @@ const Video = () => {
                 <div className="video-item" key={userId}>
                   <video
                     ref={(el) => {
-                      peerVideoRefs.current[userId] = el;
-                      if (el && peersRef.current[userId]?.remoteStream) {
-                        el.srcObject = peersRef.current[userId].remoteStream;
-                        el.play().catch((err) => {
-                          logDebug(`Error playing video for ${userId}: ${err.message}`);
-                        });
-                        logDebug(`Stream assigned to video element for ${userId}`);
+                      if (el && !peerVideoRefs.current[userId]) {
+                        peerVideoRefs.current[userId] = el;
+                        logDebug(`Peer video ref assigned for ${userId}: ${!!el}`);
+                        if (peersRef.current[userId]?.remoteStream) {
+                          el.srcObject = peersRef.current[userId].remoteStream;
+                          el.play().catch((err) => {
+                            logDebug(`Error playing video for ${userId}: ${err.message}`);
+                          });
+                        }
                       }
                     }}
                     autoPlay
