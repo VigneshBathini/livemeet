@@ -27,7 +27,7 @@ const io = new Server(server, {
   }
 });
 
-// Test endpoints
+// Test endpoint
 app.get('/test', (req, res) => res.send('Server is running'));
 
 // Handle all other routes with React's index.html
@@ -45,6 +45,10 @@ io.on('connection', (socket) => {
     }
     socket.join(roomId);
     socket.to(roomId).emit('user-joined', userId);
+    // Log room membership
+    io.in(roomId).allSockets().then((sockets) => {
+      console.log(`Room ${roomId} members: ${Array.from(sockets).join(', ')}`);
+    });
     console.log(`${userId} joined room ${roomId}`);
   });
 
@@ -55,8 +59,7 @@ io.on('connection', (socket) => {
       return;
     }
     console.log(`Received chat message from ${messageData.userId} in room ${messageData.roomId}: ${messageData.message}`);
-    // Broadcast to entire room (including sender) for debugging
-    io.to(messageData.roomId).emit('chat-message', messageData);
+    socket.to(messageData.roomId).emit('chat-message', messageData);
     if (callback) callback({ success: true });
   });
 

@@ -10,7 +10,7 @@ if (typeof window !== 'undefined' && typeof window.process === 'undefined') {
   };
 }
 
-const SIGNALING_SERVER_URL = 'https://livemeet-ribm.onrender.com';
+const SIGNALING_SERVER_URL = 'http://localhost:3000'; // Change to 'https://livemeet-ribm.onrender.com' for production
 
 class ErrorBoundary extends React.Component {
   state = { hasError: false };
@@ -79,6 +79,8 @@ const Video = () => {
         if (inRoom) {
           logDebug('Rejoining room after reconnect');
           socketRef.current.emit('join-room', roomId, socketRef.current.id);
+          // Renegotiate all peers after reconnect
+          Object.keys(peersRef.current).forEach((userId) => renegotiatePeer(userId));
         }
       });
       socketRef.current.on('connect_error', (err) => {
@@ -97,11 +99,13 @@ const Video = () => {
       socketRef.current.on('ice-candidate', handleIceCandidate);
       socketRef.current.on('user-left', handleUserLeft);
       socketRef.current.on('chat-message', (messageData) => {
-        logDebug(`Received chat message from ${messageData.userId}: ${messageData.message}`);
-        setMessages((prev) => [
-          ...prev,
-          { userId: messageData.userId, message: messageData.message, timestamp: new Date(messageData.timestamp).toLocaleTimeString() },
-        ].slice(-100));
+        if (messageData.userId !== socketRef.current.id) { // Avoid duplicate messages from self
+          logDebug(`Received chat message from ${messageData.userId}: ${messageData.message}`);
+          setMessages((prev) => [
+            ...prev,
+            { userId: messageData.userId, message: messageData.message, timestamp: new Date(messageData.timestamp).toLocaleTimeString() },
+          ].slice(-100));
+        }
       });
 
       const testIceServers = async () => {
@@ -112,7 +116,7 @@ const Video = () => {
               { urls: 'stun:stun1.l.google.com:19302' },
               { urls: 'stun:stun2.l.google.com:19302' },
               {
-                urls: 'turn:openrelay.metered.ca:80',
+                urls: ['turn:openrelay.metered.ca:80', 'turn:openrelay.metered.ca:443'],
                 username: 'openrelayproject',
                 credential: 'openrelayproject',
               },
@@ -127,6 +131,9 @@ const Video = () => {
             if (e.candidate) {
               logDebug(`ICE candidate generated: ${JSON.stringify(e.candidate)}`);
             }
+          };
+          pc.oniceconnectionstatechange = () => {
+            logDebug(`ICE test connection state: ${pc.iceConnectionState}`);
           };
           pc.createDataChannel('test');
           await pc.createOffer().then((offer) => pc.setLocalDescription(offer));
@@ -150,18 +157,22 @@ const Video = () => {
   useEffect(() => {
     if (!localStream || !inRoom) return;
 
-    const assignStream = () => {
+    const assignStream = (attempt = 1, maxAttempts = 20, delay = 500) => {
+      if (attempt > maxAttempts) {
+        logDebug('Failed to assign local stream after max attempts');
+        return;
+      }
       if (userVideoRef.current) {
         userVideoRef.current.srcObject = localStream;
         requestAnimationFrame(() => {
           userVideoRef.current.play().catch((err) => {
-            logDebug(`Error playing local video: ${err.message}`);
+            logDebug(`Error playing local video (attempt ${attempt}): ${err.message}`);
           });
           logDebug('Local stream assigned to video element.');
         });
       } else {
-        logDebug('Retrying local stream assignment...');
-        setTimeout(assignStream, 500);
+        logDebug(`Retrying local stream assignment (attempt ${attempt}/${maxAttempts})...`);
+        setTimeout(() => assignStream(attempt + 1, maxAttempts, delay * 1.5), delay);
       }
     };
     assignStream();
@@ -255,7 +266,11 @@ const Video = () => {
           }
         });
 
-        const assignScreenStream = () => {
+        const assignScreenStream = (attempt = 1, maxAttempts = 20, delay = 500) => {
+          if (attempt > maxAttempts) {
+            logDebug('Failed to assign screen stream after max attempts');
+            return;
+          }
           if (userVideoRef.current) {
             userVideoRef.current.srcObject = screenStream;
             requestAnimationFrame(() => {
@@ -263,8 +278,8 @@ const Video = () => {
               logDebug('Screen stream assigned to local video element.');
             });
           } else {
-            logDebug('Retrying screen stream assignment...');
-            setTimeout(assignScreenStream, 500);
+            logDebug(`Retrying screen stream assignment (attempt ${attempt}/${maxAttempts})...`);
+            setTimeout(() => assignScreenStream(attempt + 1, maxAttempts, delay * 1.5), delay);
           }
         };
         assignScreenStream();
@@ -304,7 +319,11 @@ const Video = () => {
         }
       });
 
-      const assignCameraStream = () => {
+      const assignCameraStream = (attempt = 1, maxAttempts = 20, delay = 500) => {
+        if (attempt > maxAttempts) {
+          logDebug('Failed to assign camera stream after max attempts');
+          return;
+        }
         if (userVideoRef.current) {
           userVideoRef.current.srcObject = cameraStream;
           requestAnimationFrame(() => {
@@ -312,8 +331,8 @@ const Video = () => {
             logDebug('Camera stream assigned to local video element.');
           });
         } else {
-          logDebug('Retrying camera stream assignment...');
-          setTimeout(assignCameraStream, 500);
+          logDebug(`Retrying camera stream assignment (attempt ${attempt}/${maxAttempts})...`);
+          setTimeout(() => assignCameraStream(attempt + 1, maxAttempts, delay * 1.5), delay);
         }
       };
       assignCameraStream();
@@ -342,12 +361,12 @@ const Video = () => {
           alert('Failed to send message. Please try again.');
         } else {
           logDebug(`Sent chat message: ${chatInput}`);
+          setMessages((prev) => [
+            ...prev,
+            { userId: messageData.userId, message: messageData.message, timestamp: new Date().toLocaleTimeString() },
+          ].slice(-100));
         }
       });
-      setMessages((prev) => [
-        ...prev,
-        { userId: messageData.userId, message: messageData.message, timestamp: new Date().toLocaleTimeString() },
-      ].slice(-100));
       setChatInput('');
     } else if (!socketRef.current?.connected) {
       logDebug('Cannot send message: Socket not connected');
@@ -395,7 +414,7 @@ const Video = () => {
             { urls: 'stun:stun1.l.google.com:19302' },
             { urls: 'stun:stun2.l.google.com:19302' },
             {
-              urls: 'turn:openrelay.metered.ca:80',
+              urls: ['turn:openrelay.metered.ca:80', 'turn:openrelay.metered.ca:443'],
               username: 'openrelayproject',
               credential: 'openrelayproject',
             },
@@ -408,7 +427,15 @@ const Video = () => {
         },
       });
 
+      peer._pc.onicegatheringstatechange = () => {
+        logDebug(`ICE gathering state for ${userId}: ${peer._pc.iceGatheringState}`);
+      };
+
       const debouncedSignal = debounce((signal) => {
+        if (!peer._pc || peer._pc.signalingState === 'closed') {
+          logDebug(`Cannot signal for ${userId}: Peer connection closed`);
+          return;
+        }
         if (signal.type === 'offer') {
           socketRef.current.emit('offer', { signal, to: userId });
         } else if (signal.type === 'answer') {
@@ -419,25 +446,35 @@ const Video = () => {
       }, 100);
 
       peer.on('signal', (signal) => {
-        debouncedSignal(signal);
+        if (peer._pc.signalingState === 'stable' || signal.candidate) {
+          debouncedSignal(signal);
+        } else {
+          logDebug(`Delaying signal for ${userId} until stable, current state: ${peer._pc.signalingState}`);
+          setTimeout(() => debouncedSignal(signal), 500);
+        }
       });
 
       peer.on('stream', (stream) => {
         logDebug(`Received stream from ${userId}, tracks: ${stream.getTracks().map((t) => `${t.kind}:${t.enabled}`).join(', ')}`);
         peersRef.current[userId].remoteStream = stream;
-        const assignPeerStream = () => {
+        const assignPeerStream = (attempt = 1, maxAttempts = 20, delay = 500) => {
+          if (attempt > maxAttempts) {
+            logDebug(`Failed to assign stream for ${userId} after max attempts`);
+            setConnectionStatus((prev) => ({ ...prev, [userId]: 'failed' }));
+            return;
+          }
           if (peerVideoRefs.current[userId]) {
             peerVideoRefs.current[userId].srcObject = stream;
             requestAnimationFrame(() => {
               peerVideoRefs.current[userId].play().catch((err) => {
-                logDebug(`Error playing video for ${userId}: ${err.message}`);
+                logDebug(`Error playing video for ${userId} (attempt ${attempt}): ${err.message}`);
               });
               logDebug(`Stream assigned to video element for ${userId}`);
               setConnectionStatus((prev) => ({ ...prev, [userId]: 'connected' }));
             });
           } else {
-            logDebug(`Video element for ${userId} not ready, retrying...`);
-            setTimeout(assignPeerStream, 500);
+            logDebug(`Video element for ${userId} not ready, retrying (attempt ${attempt}/${maxAttempts})...`);
+            setTimeout(() => assignPeerStream(attempt + 1, maxAttempts, delay * 1.5), delay);
           }
         };
         assignPeerStream();
@@ -470,7 +507,9 @@ const Video = () => {
       peersRef.current[userId] = peer;
       if (pendingCandidates.current[userId]) {
         pendingCandidates.current[userId].forEach((signal) => {
-          peer.signal(signal);
+          if (peer._pc.signalingState !== 'closed') {
+            peer.signal(signal);
+          }
         });
         delete pendingCandidates.current[userId];
       }
@@ -501,7 +540,7 @@ const Video = () => {
         setPeers((prev) => ({ ...prev, [data.from]: peer }));
       }
     }
-    if (peer) {
+    if (peer && peer._pc.signalingState !== 'closed') {
       peer.signal(data.signal);
     }
   };
@@ -509,7 +548,7 @@ const Video = () => {
   const handleAnswer = (data) => {
     logDebug(`Received answer from ${data.from}`);
     const peer = peersRef.current[data.from];
-    if (peer) {
+    if (peer && peer._pc.signalingState !== 'closed') {
       peer.signal(data.signal);
     } else {
       logDebug(`No peer for ${data.from}, queuing answer...`);
@@ -523,7 +562,7 @@ const Video = () => {
   const handleIceCandidate = (data) => {
     logDebug(`Received ICE candidate from ${data.from}`);
     const peer = peersRef.current[data.from];
-    if (peer) {
+    if (peer && peer._pc.signalingState !== 'closed') {
       peer.signal({ candidate: data.candidate });
     } else {
       logDebug(`Peer not ready for ICE candidate from ${data.from}, queuing...`);
@@ -709,7 +748,7 @@ const Video = () => {
           </div>
         )}
         <div className="debug mt-4 bg-white p-4 rounded-lg shadow-md">
-          <h4 className="text-lg font-semibold mb-2 text-gray-800">Debug Log</h4>
+          <h3 className="text-lg font-semibold mb-2 text-gray-800">Debug Log</h3>
           <ul className="max-h-40 overflow-y-auto text-sm text-gray-600">
             {debugLog.map((log, index) => (
               <li key={index} className="mb-1">{log}</li>
