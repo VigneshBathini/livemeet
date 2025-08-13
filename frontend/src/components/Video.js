@@ -3,6 +3,13 @@ import io from 'socket.io-client';
 import SimplePeer from 'simple-peer';
 import { debounce } from 'lodash';
 
+// Polyfill for process.nextTick in the browser
+if (typeof window !== 'undefined' && typeof window.process === 'undefined') {
+  window.process = {
+    nextTick: (fn, ...args) => setTimeout(() => fn(...args), 0),
+  };
+}
+
 const SIGNALING_SERVER_URL = 'https://livemeet-ribm.onrender.com';
 
 class ErrorBoundary extends React.Component {
@@ -57,76 +64,87 @@ const Video = () => {
   }, [logDebug]);
 
   useEffect(() => {
-    socketRef.current = io(SIGNALING_SERVER_URL, {
-      transports: ['websocket', 'polling'],
-      reconnection: true,
-      reconnectionAttempts: Infinity,
-      reconnectionDelay: 1000,
-      reconnectionDelayMax: 5000,
-      randomizationFactor: 0.5,
-    });
-
-    socketRef.current.on('connect', () => {
-      logDebug('Connected to signaling server');
-      if (inRoom) {
-        logDebug('Rejoining room after reconnect');
-        socketRef.current.emit('join-room', roomId, socketRef.current.id);
-      }
-    });
-    socketRef.current.on('connect_error', (err) => {
-      logDebug(`Socket connection error: ${err.message}`);
-      setTimeout(() => socketRef.current.connect(), 2000);
-    });
-    socketRef.current.on('reconnect', (attempt) => logDebug(`Reconnected after attempt ${attempt}`));
-    socketRef.current.on('reconnect_failed', () => {
-      logDebug('Reconnection failed. Retrying manually...');
-      socketRef.current.connect();
-    });
-
-    socketRef.current.on('user-joined', handleUserJoined);
-    socketRef.current.on('offer', handleOffer);
-    socketRef.current.on('answer', handleAnswer);
-    socketRef.current.on('ice-candidate', handleIceCandidate);
-    socketRef.current.on('user-left', handleUserLeft);
-    socketRef.current.on('chat-message', ({ userId, message, timestamp }) => {
-      setMessages((prev) => [
-        ...prev,
-        { userId, message, timestamp: new Date(timestamp).toLocaleTimeString() },
-      ].slice(-100));
-    });
-
-    const testIceServers = async () => {
-      const pc = new RTCPeerConnection({
-        iceServers: [
-          { urls: 'stun:stun.l.google.com:19302' },
-          { urls: 'stun:stun1.l.google.com:19302' },
-          { urls: 'stun:stun2.l.google.com:19302' },
-          {
-            urls: 'turn:openrelay.metered.ca:80',
-            username: 'openrelayproject',
-            credential: 'openrelayproject',
-          },
-          {
-            urls: 'turn:openrelay.metered.ca:443?transport=tcp',
-            username: 'openrelayproject',
-            credential: 'openrelayproject',
-          },
-        ],
+    try {
+      socketRef.current = io(SIGNALING_SERVER_URL, {
+        transports: ['websocket', 'polling'],
+        reconnection: true,
+        reconnectionAttempts: Infinity,
+        reconnectionDelay: 1000,
+        reconnectionDelayMax: 5000,
+        randomizationFactor: 0.5,
       });
-      pc.onicecandidate = (e) => {
-        if (e.candidate) {
-          logDebug(`ICE candidate generated: ${JSON.stringify(e.candidate)}`);
+
+      socketRef.current.on('connect', () => {
+        logDebug('Connected to signaling server');
+        if (inRoom) {
+          logDebug('Rejoining room after reconnect');
+          socketRef.current.emit('join-room', roomId, socketRef.current.id);
+        }
+      });
+      socketRef.current.on('connect_error', (err) => {
+        logDebug(`Socket connection error: ${err.message}`);
+        setTimeout(() => socketRef.current.connect(), 2000);
+      });
+      socketRef.current.on('reconnect', (attempt) => logDebug(`Reconnected after attempt ${attempt}`));
+      socketRef.current.on('reconnect_failed', () => {
+        logDebug('Reconnection failed. Retrying manually...');
+        socketRef.current.connect();
+      });
+
+      socketRef.current.on('user-joined', handleUserJoined);
+      socketRef.current.on('offer', handleOffer);
+      socketRef.current.on('answer', handleAnswer);
+      socketRef.current.on('ice-candidate', handleIceCandidate);
+      socketRef.current.on('user-left', handleUserLeft);
+      socketRef.current.on('chat-message', (messageData) => {
+        logDebug(`Received chat message from ${messageData.userId}: ${messageData.message}`);
+        setMessages((prev) => [
+          ...prev,
+          { userId: messageData.userId, message: messageData.message, timestamp: new Date(messageData.timestamp).toLocaleTimeString() },
+        ].slice(-100));
+      });
+
+      const testIceServers = async () => {
+        try {
+          const pc = new RTCPeerConnection({
+            iceServers: [
+              { urls: 'stun:stun.l.google.com:19302' },
+              { urls: 'stun:stun1.l.google.com:19302' },
+              { urls: 'stun:stun2.l.google.com:19302' },
+              {
+                urls: 'turn:openrelay.metered.ca:80',
+                username: 'openrelayproject',
+                credential: 'openrelayproject',
+              },
+              {
+                urls: 'turn:openrelay.metered.ca:443?transport=tcp',
+                username: 'openrelayproject',
+                credential: 'openrelayproject',
+              },
+            ],
+          });
+          pc.onicecandidate = (e) => {
+            if (e.candidate) {
+              logDebug(`ICE candidate generated: ${JSON.stringify(e.candidate)}`);
+            }
+          };
+          pc.createDataChannel('test');
+          await pc.createOffer().then((offer) => pc.setLocalDescription(offer));
+          setTimeout(() => pc.close(), 5000);
+        } catch (err) {
+          logDebug(`ICE server test failed: ${err.message}`);
         }
       };
-      pc.createDataChannel('test');
-      await pc.createOffer().then((offer) => pc.setLocalDescription(offer));
-      setTimeout(() => pc.close(), 5000);
-    };
-    testIceServers();
+      testIceServers();
 
-    return () => {
-      socketRef.current.disconnect();
-    };
+      return () => {
+        if (socketRef.current) {
+          socketRef.current.disconnect();
+        }
+      };
+    } catch (err) {
+      logDebug(`Socket initialization error: ${err.message}`);
+    }
   }, [logDebug, roomId, inRoom]);
 
   useEffect(() => {
@@ -311,18 +329,29 @@ const Video = () => {
   };
 
   const sendMessage = () => {
-    if (chatInput.trim()) {
+    if (chatInput.trim() && socketRef.current?.connected) {
       const messageData = {
+        roomId,
         userId: socketRef.current.id,
         message: chatInput,
         timestamp: new Date().toISOString(),
       };
-      socketRef.current.emit('chat-message', messageData);
+      socketRef.current.emit('chat-message', messageData, (ack) => {
+        if (ack?.error) {
+          logDebug(`Failed to send chat message: ${ack.error}`);
+          alert('Failed to send message. Please try again.');
+        } else {
+          logDebug(`Sent chat message: ${chatInput}`);
+        }
+      });
       setMessages((prev) => [
         ...prev,
-        { ...messageData, timestamp: new Date().toLocaleTimeString() },
+        { userId: messageData.userId, message: messageData.message, timestamp: new Date().toLocaleTimeString() },
       ].slice(-100));
       setChatInput('');
+    } else if (!socketRef.current?.connected) {
+      logDebug('Cannot send message: Socket not connected');
+      alert('Cannot send message: Not connected to server.');
     }
   };
 
@@ -346,111 +375,120 @@ const Video = () => {
     });
 
     const newPeer = createPeer(userId, true);
-    peersRef.current[userId] = newPeer;
-    setPeers((prev) => ({ ...prev, [userId]: newPeer }));
-    setConnectionStatus((prev) => ({ ...prev, [userId]: 'connecting' }));
+    if (newPeer) {
+      peersRef.current[userId] = newPeer;
+      setPeers((prev) => ({ ...prev, [userId]: newPeer }));
+      setConnectionStatus((prev) => ({ ...prev, [userId]: 'connecting' }));
+    }
   };
 
   const createPeer = (userId, initiator) => {
     logDebug(`Creating peer for ${userId}, initiator: ${initiator}`);
-    const peer = new SimplePeer({
-      initiator,
-      trickle: true,
-      stream: localStream,
-      config: {
-        iceServers: [
-          { urls: 'stun:stun.l.google.com:19302' },
-          { urls: 'stun:stun1.l.google.com:19302' },
-          { urls: 'stun:stun2.l.google.com:19302' },
-          {
-            urls: 'turn:openrelay.metered.ca:80',
-            username: 'openrelayproject',
-            credential: 'openrelayproject',
-          },
-          {
-            urls: 'turn:openrelay.metered.ca:443?transport=tcp',
-            username: 'openrelayproject',
-            credential: 'openrelayproject',
-          },
-        ],
-      },
-    });
-
-    const debouncedSignal = debounce((signal) => {
-      if (signal.type === 'offer') {
-        socketRef.current.emit('offer', { signal, to: userId });
-      } else if (signal.type === 'answer') {
-        socketRef.current.emit('answer', { signal, to: userId });
-      } else if (signal.candidate) {
-        socketRef.current.emit('ice-candidate', { candidate: signal.candidate, to: userId });
-      }
-    }, 100);
-
-    peer.on('signal', (signal) => {
-      debouncedSignal(signal);
-    });
-
-    peer.on('stream', (stream) => {
-      logDebug(`Received stream from ${userId}, tracks: ${stream.getTracks().map((t) => `${t.kind}:${t.enabled}`).join(', ')}`);
-      peersRef.current[userId].remoteStream = stream;
-      const assignPeerStream = () => {
-        if (peerVideoRefs.current[userId]) {
-          peerVideoRefs.current[userId].srcObject = stream;
-          requestAnimationFrame(() => {
-            peerVideoRefs.current[userId].play().catch((err) => {
-              logDebug(`Error playing video for ${userId}: ${err.message}`);
-            });
-            logDebug(`Stream assigned to video element for ${userId}`);
-            setConnectionStatus((prev) => ({ ...prev, [userId]: 'connected' }));
-          });
-        } else {
-          logDebug(`Video element for ${userId} not ready, retrying...`);
-          setTimeout(assignPeerStream, 500);
-        }
-      };
-      assignPeerStream();
-    });
-
-    peer.on('connect', () => {
-      logDebug(`Peer connection established with ${userId}`);
-      setConnectionStatus((prev) => ({ ...prev, [userId]: 'connected' }));
-    });
-    peer.on('error', (err) => {
-      logDebug(`Peer error (${userId}): ${err.message}`);
-      setConnectionStatus((prev) => ({ ...prev, [userId]: 'failed' }));
-    });
-    peer.on('close', () => {
-      logDebug(`Peer connection closed for ${userId}`);
-      setConnectionStatus((prev) => ({ ...prev, [userId]: 'disconnected' }));
-    });
-    peer.on('iceconnectionstatechange', () => {
-      const state = peer._pc.iceConnectionState;
-      logDebug(`ICE connection state for ${userId}: ${state}`);
-      if (state === 'disconnected' || state === 'failed') {
-        logDebug(`Renegotiating peer ${userId} due to ${state} state`);
-        renegotiatePeer(userId);
-      } else if (state === 'connected') {
-        logDebug(`Peer ${userId} successfully connected`);
-        setConnectionStatus((prev) => ({ ...prev, [userId]: 'connected' }));
-      }
-    });
-
-    peersRef.current[userId] = peer;
-    if (pendingCandidates.current[userId]) {
-      pendingCandidates.current[userId].forEach((signal) => {
-        peer.signal(signal);
+    try {
+      const peer = new SimplePeer({
+        initiator,
+        trickle: true,
+        stream: localStream,
+        config: {
+          iceServers: [
+            { urls: 'stun:stun.l.google.com:19302' },
+            { urls: 'stun:stun1.l.google.com:19302' },
+            { urls: 'stun:stun2.l.google.com:19302' },
+            {
+              urls: 'turn:openrelay.metered.ca:80',
+              username: 'openrelayproject',
+              credential: 'openrelayproject',
+            },
+            {
+              urls: 'turn:openrelay.metered.ca:443?transport=tcp',
+              username: 'openrelayproject',
+              credential: 'openrelayproject',
+            },
+          ],
+        },
       });
-      delete pendingCandidates.current[userId];
-    }
 
-    return peer;
+      const debouncedSignal = debounce((signal) => {
+        if (signal.type === 'offer') {
+          socketRef.current.emit('offer', { signal, to: userId });
+        } else if (signal.type === 'answer') {
+          socketRef.current.emit('answer', { signal, to: userId });
+        } else if (signal.candidate) {
+          socketRef.current.emit('ice-candidate', { candidate: signal.candidate, to: userId });
+        }
+      }, 100);
+
+      peer.on('signal', (signal) => {
+        debouncedSignal(signal);
+      });
+
+      peer.on('stream', (stream) => {
+        logDebug(`Received stream from ${userId}, tracks: ${stream.getTracks().map((t) => `${t.kind}:${t.enabled}`).join(', ')}`);
+        peersRef.current[userId].remoteStream = stream;
+        const assignPeerStream = () => {
+          if (peerVideoRefs.current[userId]) {
+            peerVideoRefs.current[userId].srcObject = stream;
+            requestAnimationFrame(() => {
+              peerVideoRefs.current[userId].play().catch((err) => {
+                logDebug(`Error playing video for ${userId}: ${err.message}`);
+              });
+              logDebug(`Stream assigned to video element for ${userId}`);
+              setConnectionStatus((prev) => ({ ...prev, [userId]: 'connected' }));
+            });
+          } else {
+            logDebug(`Video element for ${userId} not ready, retrying...`);
+            setTimeout(assignPeerStream, 500);
+          }
+        };
+        assignPeerStream();
+      });
+
+      peer.on('connect', () => {
+        logDebug(`Peer connection established with ${userId}`);
+        setConnectionStatus((prev) => ({ ...prev, [userId]: 'connected' }));
+      });
+      peer.on('error', (err) => {
+        logDebug(`Peer error (${userId}): ${err.message}`);
+        setConnectionStatus((prev) => ({ ...prev, [userId]: 'failed' }));
+      });
+      peer.on('close', () => {
+        logDebug(`Peer connection closed for ${userId}`);
+        setConnectionStatus((prev) => ({ ...prev, [userId]: 'disconnected' }));
+      });
+      peer.on('iceconnectionstatechange', () => {
+        const state = peer._pc.iceConnectionState;
+        logDebug(`ICE connection state for ${userId}: ${state}`);
+        if (state === 'disconnected' || state === 'failed') {
+          logDebug(`Renegotiating peer ${userId} due to ${state} state`);
+          renegotiatePeer(userId);
+        } else if (state === 'connected') {
+          logDebug(`Peer ${userId} successfully connected`);
+          setConnectionStatus((prev) => ({ ...prev, [userId]: 'connected' }));
+        }
+      });
+
+      peersRef.current[userId] = peer;
+      if (pendingCandidates.current[userId]) {
+        pendingCandidates.current[userId].forEach((signal) => {
+          peer.signal(signal);
+        });
+        delete pendingCandidates.current[userId];
+      }
+
+      return peer;
+    } catch (err) {
+      logDebug(`Peer creation error for ${userId}: ${err.message}`);
+      return null;
+    }
   };
 
   const handleUserJoined = (userId) => {
     logDebug(`User joined: ${userId}, current peers: ${Object.keys(peersRef.current)}`);
     setConnectionStatus((prev) => ({ ...prev, [userId]: 'connecting' }));
     const peer = createPeer(userId, true);
-    setPeers((prev) => ({ ...prev, [userId]: peer }));
+    if (peer) {
+      setPeers((prev) => ({ ...prev, [userId]: peer }));
+    }
   };
 
   const handleOffer = (data) => {
@@ -458,10 +496,14 @@ const Video = () => {
     let peer = peersRef.current[data.from];
     if (!peer) {
       peer = createPeer(data.from, false);
-      peersRef.current[data.from] = peer;
-      setPeers((prev) => ({ ...prev, [data.from]: peer }));
+      if (peer) {
+        peersRef.current[data.from] = peer;
+        setPeers((prev) => ({ ...prev, [data.from]: peer }));
+      }
     }
-    peer.signal(data.signal);
+    if (peer) {
+      peer.signal(data.signal);
+    }
   };
 
   const handleAnswer = (data) => {
