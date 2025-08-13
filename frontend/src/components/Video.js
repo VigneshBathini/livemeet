@@ -28,6 +28,7 @@ const Video = () => {
   const [isVideoOn, setIsVideoOn] = useState(true);
   const [isAudioOn, setIsAudioOn] = useState(true);
   const [isScreenSharing, setIsScreenSharing] = useState(false);
+  const [connectionStatus, setConnectionStatus] = useState({});
 
   const socketRef = useRef();
   const userVideoRef = useRef();
@@ -58,18 +59,18 @@ const Video = () => {
       randomizationFactor: 0.5,
     });
 
-    socketRef.current.on('connect', () => logDebug('Connected to signaling server'));
-    socketRef.current.on('connect_error', (err) => {
-      logDebug(`Socket connection error: ${err.message}`);
-      setTimeout(() => socketRef.current.connect(), 2000);
-    });
-    socketRef.current.on('reconnect', (attempt) => {
-      logDebug(`Reconnected after attempt ${attempt}`);
+    socketRef.current.on('connect', () => {
+      logDebug('Connected to signaling server');
       if (inRoom) {
         logDebug('Rejoining room after reconnect');
         socketRef.current.emit('join-room', roomId, socketRef.current.id);
       }
     });
+    socketRef.current.on('connect_error', (err) => {
+      logDebug(`Socket connection error: ${err.message}`);
+      setTimeout(() => socketRef.current.connect(), 2000);
+    });
+    socketRef.current.on('reconnect', (attempt) => logDebug(`Reconnected after attempt ${attempt}`));
     socketRef.current.on('reconnect_failed', () => {
       logDebug('Reconnection failed. Retrying manually...');
       socketRef.current.connect();
@@ -86,6 +87,7 @@ const Video = () => {
         iceServers: [
           { urls: 'stun:stun.l.google.com:19302' },
           { urls: 'stun:stun1.l.google.com:19302' },
+          { urls: 'stun:stun2.l.google.com:19302' },
           {
             urls: 'turn:openrelay.metered.ca:80',
             username: 'openrelayproject',
@@ -117,16 +119,18 @@ const Video = () => {
   useEffect(() => {
     if (!localStream || !inRoom) return;
 
-    const assignStream = () => {
+    const assignStream = (attempt = 1) => {
       if (userVideoRef.current) {
         userVideoRef.current.srcObject = localStream;
         userVideoRef.current.play().catch((err) => {
           logDebug(`Error playing local video: ${err.message}`);
         });
         logDebug('Local stream assigned to video element.');
+      } else if (attempt <= 10) {
+        logDebug(`Retrying local stream assignment (${attempt}/10)...`);
+        setTimeout(() => assignStream(attempt + 1), 1000);
       } else {
-        logDebug('Retrying local stream assignment...');
-        setTimeout(assignStream, 100);
+        logDebug('Failed to assign local stream after 10 attempts');
       }
     };
     assignStream();
@@ -146,10 +150,12 @@ const Video = () => {
   const joinRoom = async () => {
     if (!roomId.trim()) {
       logDebug('Please enter a Room ID.');
+      alert('Please enter a Room ID.');
       return;
     }
 
     if (!(await checkPermissions())) {
+      logDebug('Camera/microphone permissions denied.');
       alert('Please grant camera and microphone permissions.');
       return;
     }
@@ -200,29 +206,48 @@ const Video = () => {
         const screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
         const screenTrack = screenStream.getVideoTracks()[0];
 
+        // Stop existing video tracks
+        if (localStream) {
+          localStream.getVideoTracks().forEach(track => track.stop());
+        }
+
+        // Replace tracks for all peers
         Object.values(peersRef.current).forEach(peer => {
           const sender = peer._pc.getSenders().find(s => s.track?.kind === 'video');
           if (sender) {
             sender.replaceTrack(screenTrack);
-            logDebug(`Replaced video track for peer ${peer._id}`);
+            logDebug(`Replaced video track for peer ${peer._id || 'unknown'}`);
           }
         });
 
-        if (userVideoRef.current) {
-          userVideoRef.current.srcObject = screenStream;
-          userVideoRef.current.play().catch(err => logDebug(`Error playing screen share: ${err.message}`));
-        }
+        // Update local video
+        const assignScreenStream = (attempt = 1) => {
+          if (userVideoRef.current) {
+            userVideoRef.current.srcObject = screenStream;
+            userVideoRef.current.play().catch(err => logDebug(`Error playing screen share: ${err.message}`));
+            logDebug('Screen stream assigned to local video element.');
+          } else if (attempt <= 10) {
+            logDebug(`Retrying screen stream assignment (${attempt}/10)...`);
+            setTimeout(() => assignScreenStream(attempt + 1), 1000);
+          } else {
+            logDebug('Failed to assign screen stream after 10 attempts');
+          }
+        };
+        assignScreenStream();
 
         setLocalStream(screenStream);
         setIsScreenSharing(true);
 
         screenTrack.onended = () => {
+          logDebug('Screen sharing stopped by user.');
           revertToCamera();
         };
 
+        // Renegotiate peers
         Object.keys(peersRef.current).forEach(userId => renegotiatePeer(userId));
       } catch (err) {
         logDebug(`Error starting screen share: ${err.message}`);
+        alert('Failed to start screen sharing. Please try again.');
       }
     } else {
       revertToCamera();
@@ -234,25 +259,43 @@ const Video = () => {
       const cameraStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
       const cameraTrack = cameraStream.getVideoTracks()[0];
 
+      // Stop existing video tracks
+      if (localStream) {
+        localStream.getVideoTracks().forEach(track => track.stop());
+      }
+
+      // Replace tracks for all peers
       Object.values(peersRef.current).forEach(peer => {
         const sender = peer._pc.getSenders().find(s => s.track?.kind === 'video');
         if (sender) {
           sender.replaceTrack(cameraTrack);
-          logDebug(`Replaced video track for peer ${peer._id}`);
+          logDebug(`Replaced video track for peer ${peer._id || 'unknown'}`);
         }
       });
 
-      if (userVideoRef.current) {
-        userVideoRef.current.srcObject = cameraStream;
-        userVideoRef.current.play().catch(err => logDebug(`Error playing camera stream: ${err.message}`));
-      }
+      // Update local video
+      const assignCameraStream = (attempt = 1) => {
+        if (userVideoRef.current) {
+          userVideoRef.current.srcObject = cameraStream;
+          userVideoRef.current.play().catch(err => logDebug(`Error playing camera stream: ${err.message}`));
+          logDebug('Camera stream assigned to local video element.');
+        } else if (attempt <= 10) {
+          logDebug(`Retrying camera stream assignment (${attempt}/10)...`);
+          setTimeout(() => assignCameraStream(attempt + 1), 1000);
+        } else {
+          logDebug('Failed to assign camera stream after 10 attempts');
+        }
+      };
+      assignCameraStream();
 
       setLocalStream(cameraStream);
       setIsScreenSharing(false);
 
+      // Renegotiate peers
       Object.keys(peersRef.current).forEach(userId => renegotiatePeer(userId));
     } catch (err) {
       logDebug(`Error reverting to camera: ${err.message}`);
+      alert('Failed to revert to camera. Please check permissions or devices.');
     }
   };
 
@@ -260,6 +303,7 @@ const Video = () => {
     const peer = peersRef.current[userId];
     if (!peer) return;
 
+    logDebug(`Renegotiating peer connection for ${userId}`);
     peer.destroy();
     delete peersRef.current[userId];
     setPeers((prev) => {
@@ -271,6 +315,7 @@ const Video = () => {
     const newPeer = createPeer(userId, true);
     peersRef.current[userId] = newPeer;
     setPeers((prev) => ({ ...prev, [userId]: newPeer }));
+    setConnectionStatus((prev) => ({ ...prev, [userId]: 'connecting' }));
   };
 
   const createPeer = (userId, initiator) => {
@@ -283,6 +328,7 @@ const Video = () => {
         iceServers: [
           { urls: 'stun:stun.l.google.com:19302' },
           { urls: 'stun:stun1.l.google.com:19302' },
+          { urls: 'stun:stun2.l.google.com:19302' },
           {
             urls: 'turn:openrelay.metered.ca:80',
             username: 'openrelayproject',
@@ -298,13 +344,15 @@ const Video = () => {
     });
 
     peer.on('signal', (signal) => {
-      if (signal.type === 'offer') {
-        socketRef.current.emit('offer', { signal, to: userId });
-      } else if (signal.type === 'answer') {
-        socketRef.current.emit('answer', { signal, to: userId });
-      } else if (signal.candidate) {
-        socketRef.current.emit('ice-candidate', { candidate: signal.candidate, to: userId });
-      }
+      setTimeout(() => {
+        if (signal.type === 'offer') {
+          socketRef.current.emit('offer', { signal, to: userId });
+        } else if (signal.type === 'answer') {
+          socketRef.current.emit('answer', { signal, to: userId });
+        } else if (signal.candidate) {
+          socketRef.current.emit('ice-candidate', { candidate: signal.candidate, to: userId });
+        }
+      }, 100); // Small delay to prevent signaling race conditions
     });
 
     peer.on('stream', (stream) => {
@@ -317,19 +365,30 @@ const Video = () => {
             logDebug(`Error playing video for ${userId}: ${err.message}`);
           });
           logDebug(`Stream assigned to video element for ${userId}`);
-        } else if (attempt <= 10) {
-          logDebug(`Video element for ${userId} not ready, retrying (${attempt}/10)...`);
+          setConnectionStatus((prev) => ({ ...prev, [userId]: 'connected' }));
+        } else if (attempt <= 15) {
+          logDebug(`Video element for ${userId} not ready, retrying (${attempt}/15)...`);
           setTimeout(() => assignPeerStream(attempt + 1), 1000);
         } else {
-          logDebug(`Failed to assign stream for ${userId} after 10 attempts`);
+          logDebug(`Failed to assign stream for ${userId} after 15 attempts`);
+          setConnectionStatus((prev) => ({ ...prev, [userId]: 'failed' }));
         }
       };
       assignPeerStream();
     });
 
-    peer.on('connect', () => logDebug(`Peer connection established with ${userId}`));
-    peer.on('error', (err) => logDebug(`Peer error (${userId}): ${err.message}`));
-    peer.on('close', () => logDebug(`Peer connection closed for ${userId}`));
+    peer.on('connect', () => {
+      logDebug(`Peer connection established with ${userId}`);
+      setConnectionStatus((prev) => ({ ...prev, [userId]: 'connected' }));
+    });
+    peer.on('error', (err) => {
+      logDebug(`Peer error (${userId}): ${err.message}`);
+      setConnectionStatus((prev) => ({ ...prev, [userId]: 'failed' }));
+    });
+    peer.on('close', () => {
+      logDebug(`Peer connection closed for ${userId}`);
+      setConnectionStatus((prev) => ({ ...prev, [userId]: 'disconnected' }));
+    });
     peer.on('iceconnectionstatechange', () => {
       const state = peer._pc.iceConnectionState;
       logDebug(`ICE connection state for ${userId}: ${state}`);
@@ -338,6 +397,7 @@ const Video = () => {
         renegotiatePeer(userId);
       } else if (state === 'connected') {
         logDebug(`Peer ${userId} successfully connected`);
+        setConnectionStatus((prev) => ({ ...prev, [userId]: 'connected' }));
       }
     });
 
@@ -354,6 +414,7 @@ const Video = () => {
 
   const handleUserJoined = (userId) => {
     logDebug(`User joined: ${userId}, current peers: ${Object.keys(peersRef.current)}`);
+    setConnectionStatus((prev) => ({ ...prev, [userId]: 'connecting' }));
     const peer = createPeer(userId, true);
     setPeers((prev) => ({ ...prev, [userId]: peer }));
   };
@@ -399,6 +460,7 @@ const Video = () => {
 
   const handleUserLeft = (userId) => {
     logDebug(`User left: ${userId}`);
+    setConnectionStatus((prev) => ({ ...prev, [userId]: 'disconnected' }));
     if (peersRef.current[userId]) {
       peersRef.current[userId].destroy();
       delete peersRef.current[userId];
@@ -470,7 +532,9 @@ const Video = () => {
                     playsInline
                     style={{ width: '320px', height: '240px', border: '1px solid #000', background: '#000' }}
                   />
-                  <div>Peer: {userId}</div>
+                  <div>
+                    Peer: {userId} ({connectionStatus[userId] || 'connecting'})
+                  </div>
                 </div>
               ))}
             </div>
