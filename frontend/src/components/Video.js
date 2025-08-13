@@ -10,7 +10,9 @@ if (typeof window !== 'undefined' && typeof window.process === 'undefined') {
   };
 }
 
-const SIGNALING_SERVER_URL = 'http://localhost:3000'; // Change to 'https://livemeet-ribm.onrender.com' for production
+//const SIGNALING_SERVER_URL = 'http://localhost:3000'; // Change to 'https://livemeet-ribm.onrender.com' for production
+
+const SIGNALING_SERVER_URL = 'https://livemeet-ribm.onrender.com';
 
 class ErrorBoundary extends React.Component {
   state = { hasError: false };
@@ -79,7 +81,6 @@ const Video = () => {
         if (inRoom) {
           logDebug('Rejoining room after reconnect');
           socketRef.current.emit('join-room', roomId, socketRef.current.id);
-          // Renegotiate all peers after reconnect
           Object.keys(peersRef.current).forEach((userId) => renegotiatePeer(userId));
         }
       });
@@ -99,7 +100,7 @@ const Video = () => {
       socketRef.current.on('ice-candidate', handleIceCandidate);
       socketRef.current.on('user-left', handleUserLeft);
       socketRef.current.on('chat-message', (messageData) => {
-        if (messageData.userId !== socketRef.current.id) { // Avoid duplicate messages from self
+        if (messageData.userId !== socketRef.current.id) {
           logDebug(`Received chat message from ${messageData.userId}: ${messageData.message}`);
           setMessages((prev) => [
             ...prev,
@@ -233,6 +234,7 @@ const Video = () => {
         videoTrack.enabled = !videoTrack.enabled;
         setIsVideoOn(videoTrack.enabled);
         logDebug(`Video track ${videoTrack.enabled ? 'enabled' : 'disabled'}`);
+        Object.keys(peersRef.current).forEach((userId) => renegotiatePeer(userId));
       }
     }
   };
@@ -431,6 +433,18 @@ const Video = () => {
         logDebug(`ICE gathering state for ${userId}: ${peer._pc.iceGatheringState}`);
       };
 
+      peer._pc.oniceconnectionstatechange = () => {
+        const state = peer._pc.iceConnectionState;
+        logDebug(`ICE connection state for ${userId}: ${state}`);
+        if (state === 'disconnected' || state === 'failed') {
+          logDebug(`Renegotiating peer ${userId} due to ${state} state`);
+          renegotiatePeer(userId);
+        } else if (state === 'connected') {
+          logDebug(`Peer ${userId} successfully connected`);
+          setConnectionStatus((prev) => ({ ...prev, [userId]: 'connected' }));
+        }
+      };
+
       const debouncedSignal = debounce((signal) => {
         if (!peer._pc || peer._pc.signalingState === 'closed') {
           logDebug(`Cannot signal for ${userId}: Peer connection closed`);
@@ -438,10 +452,13 @@ const Video = () => {
         }
         if (signal.type === 'offer') {
           socketRef.current.emit('offer', { signal, to: userId });
+          logDebug(`Sent offer to ${userId}`);
         } else if (signal.type === 'answer') {
           socketRef.current.emit('answer', { signal, to: userId });
+          logDebug(`Sent answer to ${userId}`);
         } else if (signal.candidate) {
           socketRef.current.emit('ice-candidate', { candidate: signal.candidate, to: userId });
+          logDebug(`Sent ICE candidate to ${userId}`);
         }
       }, 100);
 
@@ -457,10 +474,11 @@ const Video = () => {
       peer.on('stream', (stream) => {
         logDebug(`Received stream from ${userId}, tracks: ${stream.getTracks().map((t) => `${t.kind}:${t.enabled}`).join(', ')}`);
         peersRef.current[userId].remoteStream = stream;
-        const assignPeerStream = (attempt = 1, maxAttempts = 20, delay = 500) => {
+        const assignPeerStream = (attempt = 1, maxAttempts = 30, delay = 500) => {
           if (attempt > maxAttempts) {
             logDebug(`Failed to assign stream for ${userId} after max attempts`);
             setConnectionStatus((prev) => ({ ...prev, [userId]: 'failed' }));
+            renegotiatePeer(userId);
             return;
           }
           if (peerVideoRefs.current[userId]) {
@@ -468,6 +486,10 @@ const Video = () => {
             requestAnimationFrame(() => {
               peerVideoRefs.current[userId].play().catch((err) => {
                 logDebug(`Error playing video for ${userId} (attempt ${attempt}): ${err.message}`);
+                if (err.name === 'NotAllowedError' || err.name === 'NotFoundError') {
+                  logDebug(`Renegotiating peer ${userId} due to video play error`);
+                  renegotiatePeer(userId);
+                }
               });
               logDebug(`Stream assigned to video element for ${userId}`);
               setConnectionStatus((prev) => ({ ...prev, [userId]: 'connected' }));
@@ -484,31 +506,33 @@ const Video = () => {
         logDebug(`Peer connection established with ${userId}`);
         setConnectionStatus((prev) => ({ ...prev, [userId]: 'connected' }));
       });
+
       peer.on('error', (err) => {
         logDebug(`Peer error (${userId}): ${err.message}`);
         setConnectionStatus((prev) => ({ ...prev, [userId]: 'failed' }));
+        renegotiatePeer(userId);
       });
+
       peer.on('close', () => {
         logDebug(`Peer connection closed for ${userId}`);
         setConnectionStatus((prev) => ({ ...prev, [userId]: 'disconnected' }));
+        renegotiatePeer(userId);
       });
-      peer.on('iceconnectionstatechange', () => {
-        const state = peer._pc.iceConnectionState;
-        logDebug(`ICE connection state for ${userId}: ${state}`);
-        if (state === 'disconnected' || state === 'failed') {
-          logDebug(`Renegotiating peer ${userId} due to ${state} state`);
+
+      // Timeout to renegotiate if no stream is received
+      setTimeout(() => {
+        if (!peersRef.current[userId]?.remoteStream && peer._pc.iceConnectionState !== 'connected') {
+          logDebug(`No stream received from ${userId} after timeout, renegotiating`);
           renegotiatePeer(userId);
-        } else if (state === 'connected') {
-          logDebug(`Peer ${userId} successfully connected`);
-          setConnectionStatus((prev) => ({ ...prev, [userId]: 'connected' }));
         }
-      });
+      }, 10000);
 
       peersRef.current[userId] = peer;
       if (pendingCandidates.current[userId]) {
         pendingCandidates.current[userId].forEach((signal) => {
           if (peer._pc.signalingState !== 'closed') {
             peer.signal(signal);
+            logDebug(`Applied queued signal for ${userId}`);
           }
         });
         delete pendingCandidates.current[userId];
@@ -542,6 +566,7 @@ const Video = () => {
     }
     if (peer && peer._pc.signalingState !== 'closed') {
       peer.signal(data.signal);
+      logDebug(`Processed offer from ${data.from}`);
     }
   };
 
@@ -550,6 +575,7 @@ const Video = () => {
     const peer = peersRef.current[data.from];
     if (peer && peer._pc.signalingState !== 'closed') {
       peer.signal(data.signal);
+      logDebug(`Processed answer from ${data.from}`);
     } else {
       logDebug(`No peer for ${data.from}, queuing answer...`);
       if (!pendingCandidates.current[data.from]) {
@@ -560,10 +586,11 @@ const Video = () => {
   };
 
   const handleIceCandidate = (data) => {
-    logDebug(`Received ICE candidate from ${data.from}`);
+    logDebug(`Received ICE candidate from ${data.from}: ${JSON.stringify(data.candidate)}`);
     const peer = peersRef.current[data.from];
     if (peer && peer._pc.signalingState !== 'closed') {
       peer.signal({ candidate: data.candidate });
+      logDebug(`Processed ICE candidate from ${data.from}`);
     } else {
       logDebug(`Peer not ready for ICE candidate from ${data.from}, queuing...`);
       if (!pendingCandidates.current[data.from]) {
@@ -663,6 +690,10 @@ const Video = () => {
                               requestAnimationFrame(() => {
                                 el.play().catch((err) => {
                                   logDebug(`Error playing video for ${userId}: ${err.message}`);
+                                  if (err.name === 'NotAllowedError' || err.name === 'NotFoundError') {
+                                    logDebug(`Renegotiating peer ${userId} due to video play error`);
+                                    renegotiatePeer(userId);
+                                  }
                                 });
                               });
                             }

@@ -45,7 +45,6 @@ io.on('connection', (socket) => {
     }
     socket.join(roomId);
     socket.to(roomId).emit('user-joined', userId);
-    // Log room membership
     io.in(roomId).allSockets().then((sockets) => {
       console.log(`Room ${roomId} members: ${Array.from(sockets).join(', ')}`);
     });
@@ -65,16 +64,19 @@ io.on('connection', (socket) => {
 
   socket.on('offer', (data) => {
     if (!data?.to || !data?.signal) return;
+    console.log(`Sending offer from ${socket.id} to ${data.to}`);
     socket.to(data.to).emit('offer', { signal: data.signal, from: socket.id });
   });
 
   socket.on('answer', (data) => {
     if (!data?.to || !data?.signal) return;
+    console.log(`Sending answer from ${socket.id} to ${data.to}`);
     socket.to(data.to).emit('answer', { signal: data.signal, from: socket.id });
   });
 
   socket.on('ice-candidate', (data) => {
     if (!data?.to || !data?.candidate) return;
+    console.log(`Sending ICE candidate from ${socket.id} to ${data.to}: ${JSON.stringify(data.candidate)}`);
     socket.to(data.to).emit('ice-candidate', { candidate: data.candidate, from: socket.id });
   });
 
