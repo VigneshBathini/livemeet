@@ -52,18 +52,28 @@ const Video = () => {
     socketRef.current = io(SIGNALING_SERVER_URL, {
       transports: ['websocket', 'polling'],
       reconnection: true,
-      reconnectionAttempts: 10,
-      reconnectionDelay: 2000,
+      reconnectionAttempts: Infinity,
+      reconnectionDelay: 1000,
       reconnectionDelayMax: 5000,
+      randomizationFactor: 0.5,
     });
 
     socketRef.current.on('connect', () => logDebug('Connected to signaling server'));
     socketRef.current.on('connect_error', (err) => {
-      logDebug(`Socket connection error: ${err.message}, type: ${err.type}, code: ${err.code}, description: ${err.description || 'N/A'}`);
-      console.error('Socket connect error:', err);
+      logDebug(`Socket connection error: ${err.message}`);
+      setTimeout(() => socketRef.current.connect(), 2000);
     });
-    socketRef.current.on('reconnect', (attempt) => logDebug(`Reconnected after attempt ${attempt}`));
-    socketRef.current.on('reconnect_failed', () => logDebug('Reconnection failed after maximum attempts'));
+    socketRef.current.on('reconnect', (attempt) => {
+      logDebug(`Reconnected after attempt ${attempt}`);
+      if (inRoom) {
+        logDebug('Rejoining room after reconnect');
+        socketRef.current.emit('join-room', roomId, socketRef.current.id);
+      }
+    });
+    socketRef.current.on('reconnect_failed', () => {
+      logDebug('Reconnection failed. Retrying manually...');
+      socketRef.current.connect();
+    });
 
     socketRef.current.on('user-joined', handleUserJoined);
     socketRef.current.on('offer', handleOffer);
@@ -71,10 +81,38 @@ const Video = () => {
     socketRef.current.on('ice-candidate', handleIceCandidate);
     socketRef.current.on('user-left', handleUserLeft);
 
+    const testIceServers = async () => {
+      const pc = new RTCPeerConnection({
+        iceServers: [
+          { urls: 'stun:stun.l.google.com:19302' },
+          { urls: 'stun:stun1.l.google.com:19302' },
+          {
+            urls: 'turn:openrelay.metered.ca:80',
+            username: 'openrelayproject',
+            credential: 'openrelayproject',
+          },
+          {
+            urls: 'turn:openrelay.metered.ca:443?transport=tcp',
+            username: 'openrelayproject',
+            credential: 'openrelayproject',
+          },
+        ],
+      });
+      pc.onicecandidate = (e) => {
+        if (e.candidate) {
+          logDebug(`ICE candidate generated: ${JSON.stringify(e.candidate)}`);
+        }
+      };
+      pc.createDataChannel('test');
+      await pc.createOffer().then(offer => pc.setLocalDescription(offer));
+      setTimeout(() => pc.close(), 5000);
+    };
+    testIceServers();
+
     return () => {
       socketRef.current.disconnect();
     };
-  }, [logDebug]);
+  }, [logDebug, roomId, inRoom]);
 
   useEffect(() => {
     if (!localStream || !inRoom) return;
@@ -94,13 +132,29 @@ const Video = () => {
     assignStream();
   }, [localStream, inRoom, logDebug]);
 
+  const checkPermissions = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+      stream.getTracks().forEach(track => track.stop());
+      return true;
+    } catch (err) {
+      logDebug(`Permission check failed: ${err.name} - ${err.message}`);
+      return false;
+    }
+  };
+
   const joinRoom = async () => {
     if (!roomId.trim()) {
       logDebug('Please enter a Room ID.');
       return;
     }
-    logDebug(`Joining room: ${roomId}`);
 
+    if (!(await checkPermissions())) {
+      alert('Please grant camera and microphone permissions.');
+      return;
+    }
+
+    logDebug(`Joining room: ${roomId}`);
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
       setLocalStream(stream);
@@ -110,11 +164,7 @@ const Video = () => {
       logDebug(`Local stream tracks: ${stream.getTracks().map(t => `${t.kind}:${t.enabled}`).join(', ')}`);
     } catch (err) {
       logDebug(`Error accessing media: ${err.name} - ${err.message}`);
-      if (err.name === 'NotAllowedError') {
-        alert('Please grant camera and microphone permissions.');
-      } else if (err.name === 'NotFoundError') {
-        alert('No camera or microphone found. Please check your device.');
-      }
+      alert('Failed to access camera/microphone. Please check permissions or devices.');
       return;
     }
 
@@ -122,87 +172,94 @@ const Video = () => {
     setInRoom(true);
   };
 
- const toggleVideo = () => {
-  if (localStream) {
-    const videoTrack = localStream.getVideoTracks()[0];
-    if (videoTrack) {
-      videoTrack.enabled = !videoTrack.enabled;
-      setIsVideoOn(videoTrack.enabled);
-      logDebug(`Video track ${videoTrack.enabled ? 'enabled' : 'disabled'}`);
+  const toggleVideo = () => {
+    if (localStream) {
+      const videoTrack = localStream.getVideoTracks()[0];
+      if (videoTrack) {
+        videoTrack.enabled = !videoTrack.enabled;
+        setIsVideoOn(videoTrack.enabled);
+        logDebug(`Video track ${videoTrack.enabled ? 'enabled' : 'disabled'}`);
+      }
     }
-  }
-};
+  };
 
-
-const toggleAudio = () => {
-  if (localStream) {
-    const audioTrack = localStream.getAudioTracks()[0];
-    if (audioTrack) {
-      audioTrack.enabled = !audioTrack.enabled;
-      setIsAudioOn(audioTrack.enabled);
-      logDebug(`Audio track ${audioTrack.enabled ? 'enabled' : 'disabled'}`);
+  const toggleAudio = () => {
+    if (localStream) {
+      const audioTrack = localStream.getAudioTracks()[0];
+      if (audioTrack) {
+        audioTrack.enabled = !audioTrack.enabled;
+        setIsAudioOn(audioTrack.enabled);
+        logDebug(`Audio track ${audioTrack.enabled ? 'enabled' : 'disabled'}`);
+      }
     }
-  }
-};
+  };
 
   const toggleScreenShare = async () => {
-  if (!isScreenSharing) {
+    if (!isScreenSharing) {
+      try {
+        const screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
+        const screenTrack = screenStream.getVideoTracks()[0];
+
+        Object.values(peersRef.current).forEach(peer => {
+          const sender = peer._pc.getSenders().find(s => s.track?.kind === 'video');
+          if (sender) {
+            sender.replaceTrack(screenTrack);
+            logDebug(`Replaced video track for peer ${peer._id}`);
+          }
+        });
+
+        if (userVideoRef.current) {
+          userVideoRef.current.srcObject = screenStream;
+          userVideoRef.current.play().catch(err => logDebug(`Error playing screen share: ${err.message}`));
+        }
+
+        setLocalStream(screenStream);
+        setIsScreenSharing(true);
+
+        screenTrack.onended = () => {
+          revertToCamera();
+        };
+
+        Object.keys(peersRef.current).forEach(userId => renegotiatePeer(userId));
+      } catch (err) {
+        logDebug(`Error starting screen share: ${err.message}`);
+      }
+    } else {
+      revertToCamera();
+    }
+  };
+
+  const revertToCamera = async () => {
     try {
-      const screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
-      const screenTrack = screenStream.getVideoTracks()[0];
+      const cameraStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+      const cameraTrack = cameraStream.getVideoTracks()[0];
 
       Object.values(peersRef.current).forEach(peer => {
         const sender = peer._pc.getSenders().find(s => s.track?.kind === 'video');
-        if (sender) sender.replaceTrack(screenTrack);
+        if (sender) {
+          sender.replaceTrack(cameraTrack);
+          logDebug(`Replaced video track for peer ${peer._id}`);
+        }
       });
 
-      // Show the screen locally
       if (userVideoRef.current) {
-        userVideoRef.current.srcObject = screenStream;
+        userVideoRef.current.srcObject = cameraStream;
+        userVideoRef.current.play().catch(err => logDebug(`Error playing camera stream: ${err.message}`));
       }
 
-      setIsScreenSharing(true);
+      setLocalStream(cameraStream);
+      setIsScreenSharing(false);
 
-      // When screen sharing stops
-      screenTrack.onended = () => {
-        revertToCamera();
-      };
-
+      Object.keys(peersRef.current).forEach(userId => renegotiatePeer(userId));
     } catch (err) {
-      logDebug(`Error starting screen share: ${err.message}`);
+      logDebug(`Error reverting to camera: ${err.message}`);
     }
-  } else {
-    revertToCamera();
-  }
-};
-
-
-const revertToCamera = async () => {
-  try {
-    const cameraStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-    const cameraTrack = cameraStream.getVideoTracks()[0];
-
-    Object.values(peersRef.current).forEach(peer => {
-      const sender = peer._pc.getSenders().find(s => s.track?.kind === 'video');
-      if (sender) sender.replaceTrack(cameraTrack);
-    });
-
-    if (userVideoRef.current) {
-      userVideoRef.current.srcObject = cameraStream;
-    }
-
-    setLocalStream(cameraStream);
-    setIsScreenSharing(false);
-  } catch (err) {
-    logDebug(`Error reverting to camera: ${err.message}`);
-  }
-};
+  };
 
   const renegotiatePeer = (userId) => {
     const peer = peersRef.current[userId];
     if (!peer) return;
 
-    // Destroy existing peer and create a new one
     peer.destroy();
     delete peersRef.current[userId];
     setPeers((prev) => {
@@ -252,7 +309,7 @@ const revertToCamera = async () => {
 
     peer.on('stream', (stream) => {
       logDebug(`Received stream from ${userId}, tracks: ${stream.getTracks().map(t => `${t.kind}:${t.enabled}`).join(', ')}`);
-      peersRef.current[userId].remoteStream = stream; // Store stream
+      peersRef.current[userId].remoteStream = stream;
       const assignPeerStream = (attempt = 1) => {
         if (peerVideoRefs.current[userId]) {
           peerVideoRefs.current[userId].srcObject = stream;
@@ -260,11 +317,11 @@ const revertToCamera = async () => {
             logDebug(`Error playing video for ${userId}: ${err.message}`);
           });
           logDebug(`Stream assigned to video element for ${userId}`);
-        } else if (attempt <= 5) {
-          logDebug(`Video element for ${userId} not ready, retrying (${attempt}/5)...`);
-          setTimeout(() => assignPeerStream(attempt + 1), 500);
+        } else if (attempt <= 10) {
+          logDebug(`Video element for ${userId} not ready, retrying (${attempt}/10)...`);
+          setTimeout(() => assignPeerStream(attempt + 1), 1000);
         } else {
-          logDebug(`Failed to assign stream for ${userId}: video element not found after 5 attempts`);
+          logDebug(`Failed to assign stream for ${userId} after 10 attempts`);
         }
       };
       assignPeerStream();
@@ -274,9 +331,13 @@ const revertToCamera = async () => {
     peer.on('error', (err) => logDebug(`Peer error (${userId}): ${err.message}`));
     peer.on('close', () => logDebug(`Peer connection closed for ${userId}`));
     peer.on('iceconnectionstatechange', () => {
-      logDebug(`ICE connection state for ${userId}: ${peer._pc.iceConnectionState}`);
-      if (peer._pc.iceConnectionState === 'disconnected' || peer._pc.iceConnectionState === 'failed') {
+      const state = peer._pc.iceConnectionState;
+      logDebug(`ICE connection state for ${userId}: ${state}`);
+      if (state === 'disconnected' || state === 'failed') {
+        logDebug(`Renegotiating peer ${userId} due to ${state} state`);
         renegotiatePeer(userId);
+      } else if (state === 'connected') {
+        logDebug(`Peer ${userId} successfully connected`);
       }
     });
 
@@ -443,6 +504,23 @@ const revertToCamera = async () => {
             .controls button {
               padding: 8px 16px;
               cursor: pointer;
+            }
+            .join-room {
+              display: flex;
+              gap: 10px;
+              margin-bottom: 20px;
+            }
+            .join-room input {
+              padding: 8px;
+            }
+            .join-room button {
+              padding: 8px 16px;
+              cursor: pointer;
+            }
+            .debug {
+              margin-top: 20px;
+              max-height: 200px;
+              overflow-y: auto;
             }
           `}
         </style>
