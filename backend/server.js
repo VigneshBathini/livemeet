@@ -43,7 +43,11 @@ io.on('connection', (socket) => {
     socket.to(roomId).emit('user-joined', userId || socket.id);
     console.log(`${userId || socket.id} joined room ${roomId}`);
   });
- 
+  
+  socket.on('chat-message', (messageData) => {
+    socket.to(messageData.roomId).emit('chat-message', messageData);
+  });
+
   socket.on('offer', (data) => {
     socket.to(data.to).emit('offer', { signal: data.signal, from: socket.id });
   });
