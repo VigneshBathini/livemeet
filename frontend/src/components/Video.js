@@ -3,16 +3,14 @@ import io from 'socket.io-client';
 import SimplePeer from 'simple-peer';
 import { debounce } from 'lodash';
 
-// Polyfill for process.nextTick in the browser
+
 if (typeof window !== 'undefined' && typeof window.process === 'undefined') {
   window.process = {
     nextTick: (fn, ...args) => setTimeout(() => fn(...args), 0),
   };
 }
 
-//const SIGNALING_SERVER_URL = 'http://localhost:3000'; // Change to 'https://livemeet-ribm.onrender.com' for production
-
-const SIGNALING_SERVER_URL = 'https://livemeet-ribm.onrender.com';
+const SIGNALING_SERVER_URL = 'https://livemeet-ribm.onrender.com'; 
 
 class ErrorBoundary extends React.Component {
   state = { hasError: false };
@@ -117,12 +115,7 @@ const Video = () => {
               { urls: 'stun:stun1.l.google.com:19302' },
               { urls: 'stun:stun2.l.google.com:19302' },
               {
-                urls: ['turn:openrelay.metered.ca:80', 'turn:openrelay.metered.ca:443'],
-                username: 'openrelayproject',
-                credential: 'openrelayproject',
-              },
-              {
-                urls: 'turn:openrelay.metered.ca:443?transport=tcp',
+                urls: ['turn:openrelay.metered.ca:80', 'turn:openrelay.metered.ca:443', 'turn:openrelay.metered.ca:443?transport=tcp'],
                 username: 'openrelayproject',
                 credential: 'openrelayproject',
               },
@@ -158,7 +151,7 @@ const Video = () => {
   useEffect(() => {
     if (!localStream || !inRoom) return;
 
-    const assignStream = (attempt = 1, maxAttempts = 20, delay = 500) => {
+    const assignStream = (attempt = 1, maxAttempts = 30, delay = 500) => {
       if (attempt > maxAttempts) {
         logDebug('Failed to assign local stream after max attempts');
         return;
@@ -264,11 +257,11 @@ const Video = () => {
           const sender = peer._pc.getSenders().find((s) => s.track?.kind === 'video');
           if (sender) {
             sender.replaceTrack(screenTrack);
-            logDebug(`Replaced video track for peer ${peer._id || 'unknown'}`);
+            logDebug(`Replaced video track for peer ${peer._id || 'unknown'} with screen track`);
           }
         });
 
-        const assignScreenStream = (attempt = 1, maxAttempts = 20, delay = 500) => {
+        const assignScreenStream = (attempt = 1, maxAttempts = 30, delay = 500) => {
           if (attempt > maxAttempts) {
             logDebug('Failed to assign screen stream after max attempts');
             return;
@@ -276,7 +269,7 @@ const Video = () => {
           if (userVideoRef.current) {
             userVideoRef.current.srcObject = screenStream;
             requestAnimationFrame(() => {
-              userVideoRef.current.play().catch((err) => logDebug(`Error playing screen share: ${err.message}`));
+              userVideoRef.current.play().catch((err) => logDebug(`Error playing screen share (attempt ${attempt}): ${err.message}`));
               logDebug('Screen stream assigned to local video element.');
             });
           } else {
@@ -317,11 +310,11 @@ const Video = () => {
         const sender = peer._pc.getSenders().find((s) => s.track?.kind === 'video');
         if (sender) {
           sender.replaceTrack(cameraTrack);
-          logDebug(`Replaced video track for peer ${peer._id || 'unknown'}`);
+          logDebug(`Replaced video track for peer ${peer._id || 'unknown'} with camera track`);
         }
       });
 
-      const assignCameraStream = (attempt = 1, maxAttempts = 20, delay = 500) => {
+      const assignCameraStream = (attempt = 1, maxAttempts = 30, delay = 500) => {
         if (attempt > maxAttempts) {
           logDebug('Failed to assign camera stream after max attempts');
           return;
@@ -329,7 +322,7 @@ const Video = () => {
         if (userVideoRef.current) {
           userVideoRef.current.srcObject = cameraStream;
           requestAnimationFrame(() => {
-            userVideoRef.current.play().catch((err) => logDebug(`Error playing camera stream: ${err.message}`));
+            userVideoRef.current.play().catch((err) => logDebug(`Error playing camera stream (attempt ${attempt}): ${err.message}`));
             logDebug('Camera stream assigned to local video element.');
           });
         } else {
@@ -416,12 +409,7 @@ const Video = () => {
             { urls: 'stun:stun1.l.google.com:19302' },
             { urls: 'stun:stun2.l.google.com:19302' },
             {
-              urls: ['turn:openrelay.metered.ca:80', 'turn:openrelay.metered.ca:443'],
-              username: 'openrelayproject',
-              credential: 'openrelayproject',
-            },
-            {
-              urls: 'turn:openrelay.metered.ca:443?transport=tcp',
+              urls: ['turn:openrelay.metered.ca:80', 'turn:openrelay.metered.ca:443', 'turn:openrelay.metered.ca:443?transport=tcp'],
               username: 'openrelayproject',
               credential: 'openrelayproject',
             },
@@ -458,7 +446,7 @@ const Video = () => {
           logDebug(`Sent answer to ${userId}`);
         } else if (signal.candidate) {
           socketRef.current.emit('ice-candidate', { candidate: signal.candidate, to: userId });
-          logDebug(`Sent ICE candidate to ${userId}`);
+          logDebug(`Sent ICE candidate to ${userId}: ${JSON.stringify(signal.candidate)}`);
         }
       }, 100);
 
@@ -519,7 +507,6 @@ const Video = () => {
         renegotiatePeer(userId);
       });
 
-      // Timeout to renegotiate if no stream is received
       setTimeout(() => {
         if (!peersRef.current[userId]?.remoteStream && peer._pc.iceConnectionState !== 'connected') {
           logDebug(`No stream received from ${userId} after timeout, renegotiating`);
