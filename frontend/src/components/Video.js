@@ -3,14 +3,14 @@ import io from 'socket.io-client';
 import SimplePeer from 'simple-peer';
 import { debounce } from 'lodash';
 
-
+// Polyfill for process.nextTick in the browser
 if (typeof window !== 'undefined' && typeof window.process === 'undefined') {
   window.process = {
     nextTick: (fn, ...args) => setTimeout(() => fn(...args), 0),
   };
 }
 
-const SIGNALING_SERVER_URL = 'https://livemeet-ribm.onrender.com'; 
+const SIGNALING_SERVER_URL = 'https://livemeet-ribm.onrender.com'; // Use 'http://localhost:3000' for local testing
 
 class ErrorBoundary extends React.Component {
   state = { hasError: false };
