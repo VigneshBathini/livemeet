@@ -7,10 +7,12 @@ const path = require('path');
 const app = express();
 const server = http.createServer(app);
 
+// Serve static files from the React frontend build folder
 app.use(express.static(path.join(__dirname, '..', 'frontend', 'build')));
 
+// CORS configuration
 app.use(cors({
-  origin: ['https://livemeet-ribm.onrender.com', 'http://localhost:3001'],
+  origin: ['https://livemeet-ribm.onrender.com'],
   methods: ['GET', 'POST'],
   credentials: true,
   allowedHeaders: ['Content-Type', 'Authorization']
@@ -18,26 +20,29 @@ app.use(cors({
 
 const io = new Server(server, {
   cors: {
-    origin: ['https://livemeet-ribm.onrender.com', 'http://localhost:3001'],
+    origin: ['https://livemeet-ribm.onrender.com'],
     methods: ['GET', 'POST'],
     credentials: true,
     allowedHeaders: ['Content-Type', 'Authorization']
   }
 });
 
-const rooms = {};
+// Test endpoints (place below static file serving)
+app.get('/test', (req, res) => res.send('Server is running'));
+
+// Handle all other routes with React's index.html
+app.get('*', (req, res) => {
+  res.sendFile(path.join(__dirname, '..', 'frontend', 'build', 'index.html'));
+});
 
 io.on('connection', (socket) => {
-  console.log(`New user connected: ${socket.id}`);
+  console.log('New user connected:', socket.id);
 
-  socket.on('join-room', (roomId, userId, userName, isHost) => {
+  socket.on('join-room', (roomId, userId, userName) => {
     socket.join(roomId);
-    if (!rooms[roomId]) {
-      rooms[roomId] = { users: {}, proctoredUserId: null };
-    }
-    rooms[roomId].users[userId] = { userName, isHost };
-    socket.to(roomId).emit('user-joined', userId, userName, isHost);
-    console.log(`${userId} (${userName}) joined room ${roomId}, isHost: ${isHost}`);
+    socket.to(roomId).emit('user-joined', userId || socket.id, userName);
+    console.log(`${userId || socket.id} (${userName}) joined room ${roomId}`);
+    // Debug: Log room members
     io.in(roomId).allSockets().then(sockets => {
       console.log(`Users in room ${roomId}: ${[...sockets].join(', ')}`);
     });
@@ -64,36 +69,9 @@ io.on('connection', (socket) => {
     });
   });
 
-  socket.on('set-proctored-user', (data) => {
-    if (rooms[data.roomId]) {
-      rooms[data.roomId].proctoredUserId = data.userId;
-      io.to(data.roomId).emit('set-proctored-user', { userId: data.userId, userName: data.userName });
-      console.log(`Proctored user set to ${data.userName} (${data.userId}) in room ${data.roomId}`);
-    }
-  });
-
-  socket.on('proctoring-violation', (data) => {
-    io.to(data.roomId).emit('proctoring-violation', data);
-    console.log(`Violation from ${data.userName} in room ${data.roomId}: ${data.message}`);
-  });
-
   socket.on('disconnect', () => {
-    console.log(`User disconnected: ${socket.id}`);
-    for (const roomId in rooms) {
-      if (rooms[roomId].users[socket.id]) {
-        const { userName } = rooms[roomId].users[socket.id];
-        delete rooms[roomId].users[socket.id];
-        if (rooms[roomId].proctoredUserId === socket.id) {
-          rooms[roomId].proctoredUserId = null;
-          io.to(roomId).emit('set-proctored-user', { userId: null, userName: null });
-        }
-        socket.to(roomId).emit('user-left', socket.id);
-        if (Object.keys(rooms[roomId].users).length === 0) {
-          delete rooms[roomId];
-        }
-        break;
-      }
-    }
+    socket.broadcast.emit('user-left', socket.id);
+    console.log('User disconnected:', socket.id);
   });
 });
 

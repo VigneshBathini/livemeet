@@ -3,7 +3,7 @@ import io from 'socket.io-client';
 import SimplePeer from 'simple-peer';
 import * as faceapi from 'face-api.js';
 
-const SIGNALING_SERVER_URL =  'https://livemeet-ribm.onrender.com';
+const SIGNALING_SERVER_URL = 'http://localhost:3000' || 'https://livemeet-ribm.onrender.com'; // Adjust if signaling server is on a different port
 
 class ErrorBoundary extends React.Component {
   state = { hasError: false };
@@ -24,7 +24,6 @@ const Video = () => {
   const [roomId, setRoomId] = useState('');
   const [userName, setUserName] = useState('');
   const [localStream, setLocalStream] = useState(null);
-  const [screenStream, setScreenStream] = useState(null);
   const [inRoom, setInRoom] = useState(false);
   const [peers, setPeers] = useState({});
   const [debugLog, setDebugLog] = useState([]);
@@ -50,17 +49,11 @@ const Video = () => {
   const [alertLogs, setAlertLogs] = useState([]);
   const [lastFacePosition, setLastFacePosition] = useState(null);
   const [multipleFacesCount, setMultipleFacesCount] = useState(0);
-  const [activeTab, setActiveTab] = useState('webcam');
-  const [isHost, setIsHost] = useState(false);
-  const [proctoredUserId, setProctoredUserId] = useState(null);
-  const [users, setUsers] = useState({});
 
   const socketRef = useRef();
   const userVideoRef = useRef();
-  const userScreenRef = useRef();
   const webcamRef = useRef();
   const peerVideoRefs = useRef({});
-  const peerScreenRefs = useRef({});
   const pendingCandidates = useRef({});
   const peersRef = useRef({});
   const chatRef = useRef();
@@ -111,20 +104,10 @@ const Video = () => {
         alert('Session Terminated: Too many violations detected.');
         setInRoom(false);
         setLocalStream(null);
-        setScreenStream(null);
         socketRef.current?.disconnect();
         Object.values(peersRef.current).forEach(peer => peer.destroy());
       }
       return newCount;
-    });
-
-    socketRef.current.emit('proctoring-violation', {
-      roomId,
-      userId: socketRef.current.id,
-      userName,
-      message,
-      violationType,
-      timestamp: now,
     });
 
     window.speechSynthesis.cancel();
@@ -133,7 +116,7 @@ const Video = () => {
     utterance.pitch = 1.0;
     utterance.rate = 0.9;
     window.speechSynthesis.speak(utterance);
-  }, [logDebug, roomId, userName]);
+  }, [logDebug]);
 
   useEffect(() => {
     if (alertQueue.length === 0) return;
@@ -162,8 +145,8 @@ const Video = () => {
         const loadModels = async (attempt = 1) => {
           try {
             await Promise.all([
-              faceapi.nets.ssdMobilenetv1.loadFromUri('https://cdn.jsdelivr.net/npm/face-api.js@0.22.2/weights'),
-              faceapi.nets.faceLandmark68Net.loadFromUri('https://cdn.jsdelivr.net/npm/face-api.js@0.22.2/weights'),
+              faceapi.nets.ssdMobilenetv1.loadFromUri('/weights'),
+              faceapi.nets.faceLandmark68Net.loadFromUri('/weights'),
             ]);
             logDebug('face-api.js models loaded successfully');
             setModelsLoading(false);
@@ -202,7 +185,7 @@ const Video = () => {
     socketRef.current.on('connect', () => {
       logDebug('Connected to signaling server');
       if (inRoom) {
-        socketRef.current.emit('join-room', roomId, socketRef.current.id, userName, isHost);
+        socketRef.current.emit('join-room', roomId, socketRef.current.id, userName);
       }
     });
     socketRef.current.on('connect_error', (err) => {
@@ -215,9 +198,8 @@ const Video = () => {
       socketRef.current.connect();
     });
 
-    socketRef.current.on('user-joined', (userId, userName, isHost) => {
-      logDebug(`User joined: ${userId} (${userName}), isHost: ${isHost}`);
-      setUsers((prev) => ({ ...prev, [userId]: { userName, isHost } }));
+    socketRef.current.on('user-joined', (userId, userName) => {
+      logDebug(`User joined: ${userId} (${userName})`);
       setConnectionStatus((prev) => ({ ...prev, [userId]: { status: 'connecting', userName } }));
       const peer = createPeer(userId, true);
       setPeers((prev) => ({ ...prev, [userId]: peer }));
@@ -260,11 +242,6 @@ const Video = () => {
     });
     socketRef.current.on('user-left', (userId) => {
       logDebug(`User left: ${userId}`);
-      setUsers((prev) => {
-        const newUsers = { ...prev };
-        delete newUsers[userId];
-        return newUsers;
-      });
       setConnectionStatus((prev) => {
         const newStatus = { ...prev };
         delete newStatus[userId];
@@ -282,14 +259,6 @@ const Video = () => {
           peerVideoRefs.current[userId].srcObject = null;
           delete peerVideoRefs.current[userId];
         }
-        if (peerScreenRefs.current[userId]) {
-          peerScreenRefs.current[userId].srcObject = null;
-          delete peerScreenRefs.current[userId];
-        }
-        if (proctoredUserId === userId) {
-          setProctoredUserId(null);
-          setProctoringActive(false);
-        }
       }
     });
     socketRef.current.on('chat-message', (data) => {
@@ -299,31 +268,6 @@ const Video = () => {
         { from: data.from, userName: data.userName || 'Unknown', message: data.message, time: new Date().toLocaleTimeString() },
       ]);
     });
-    socketRef.current.on('set-proctored-user', (data) => {
-      logDebug(`Proctored user set to ${data.userName} (${data.userId})`);
-      setProctoredUserId(data.userId);
-      setProctoringActive(data.userId === socketRef.current.id);
-    });
-    socketRef.current.on('proctoring-violation', (data) => {
-      logDebug(`Violation from ${data.userName} (${data.userId}): ${data.message}`);
-      setAlertLogs((prev) => [
-        ...prev,
-        {
-          message: `${data.userName}: ${data.message}`,
-          violationType: data.violationType,
-          timestamp: data.timestamp,
-          triggered: false,
-        },
-      ]);
-      setAlertQueue((prev) => [
-        ...prev,
-        {
-          message: `${data.userName}: ${data.message}`,
-          violationType: data.violationType,
-          timestamp: data.timestamp,
-        },
-      ]);
-    });
 
     return () => {
       socketRef.current.disconnect();
@@ -331,11 +275,8 @@ const Video = () => {
       if (webcamRef.current?.srcObject) {
         webcamRef.current.srcObject.getTracks().forEach(track => track.stop());
       }
-      if (screenStream) {
-        screenStream.getTracks().forEach(track => track.stop());
-      }
     };
-  }, [inRoom, roomId, userName, isHost, logDebug, screenStream, proctoredUserId]);
+  }, [inRoom, roomId, userName, logDebug]);
 
   useEffect(() => {
     if (!localStream || !inRoom) return;
@@ -343,7 +284,7 @@ const Video = () => {
     const assignStream = (attempt = 1) => {
       if (userVideoRef.current && webcamRef.current) {
         userVideoRef.current.srcObject = localStream;
-        webcamRef.current.srcObject = localStream;
+        webcamRef.current.srcObject = localStream; // Fixed: Removed .video
         userVideoRef.current.play().catch((err) => {
           logDebug(`Error playing local video: ${err.message}`);
         });
@@ -362,27 +303,6 @@ const Video = () => {
     };
     assignStream();
   }, [localStream, inRoom, logDebug]);
-
-  useEffect(() => {
-    if (!screenStream || !inRoom) return;
-
-    const assignScreenStream = (attempt = 1) => {
-      if (userScreenRef.current) {
-        userScreenRef.current.srcObject = screenStream;
-        userScreenRef.current.play().catch((err) => {
-          logDebug(`Error playing screen share video: ${err.message}`);
-        });
-        logDebug('Screen stream assigned to video element.');
-      } else if (attempt <= 10) {
-        logDebug(`Retrying screen stream assignment (${attempt}/10)...`);
-        setTimeout(() => assignScreenStream(attempt + 1), 1000);
-      } else {
-        logDebug('Failed to assign screen stream after 10 attempts');
-        setWarningMessage('Failed to initialize screen share stream.');
-      }
-    };
-    assignScreenStream();
-  }, [screenStream, inRoom, logDebug]);
 
   useEffect(() => {
     if (chatRef.current) {
@@ -410,7 +330,7 @@ const Video = () => {
         return;
       }
 
-      const video = webcamRef.current;
+      const video = webcamRef.current; // Fixed: Use webcamRef.current directly
       if (video.readyState !== 4) {
         logDebug('Video not ready:', video.readyState);
         return;
@@ -482,40 +402,6 @@ const Video = () => {
     }
   };
 
-  const createRoom = async () => {
-    if (!roomId.trim()) {
-      logDebug('Please enter a Room ID.');
-      alert('Please enter a Room ID.');
-      return;
-    }
-    if (!userName.trim()) {
-      logDebug('Please enter a username.');
-      alert('Please enter a username.');
-      return;
-    }
-
-    if (!(await checkPermissions())) {
-      logDebug('Camera/microphone permissions denied.');
-      alert('Please grant camera and microphone permissions.');
-      return;
-    }
-
-    logDebug(`Creating room: ${roomId} as ${userName} (Host)`);
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-      setLocalStream(stream);
-      setIsVideoOn(true);
-      setIsAudioOn(true);
-      setIsHost(true);
-      setUsers((prev) => ({ ...prev, [socketRef.current.id]: { userName, isHost: true } }));
-      socketRef.current.emit('join-room', roomId, socketRef.current.id, userName, true);
-      setInRoom(true);
-    } catch (err) {
-      logDebug(`Error accessing media: ${err.name} - ${err.message}`);
-      alert('Failed to access camera/microphone.');
-    }
-  };
-
   const joinRoom = async () => {
     if (!roomId.trim()) {
       logDebug('Please enter a Room ID.');
@@ -540,12 +426,16 @@ const Video = () => {
       setLocalStream(stream);
       setIsVideoOn(true);
       setIsAudioOn(true);
-      socketRef.current.emit('join-room', roomId, socketRef.current.id, userName, false);
-      setInRoom(true);
+      setProctoringActive(true);
+      logDebug('Local stream acquired successfully.');
     } catch (err) {
       logDebug(`Error accessing media: ${err.name} - ${err.message}`);
       alert('Failed to access camera/microphone.');
+      return;
     }
+
+    socketRef.current.emit('join-room', roomId, socketRef.current.id, userName);
+    setInRoom(true);
   };
 
   const toggleVideo = () => {
@@ -573,56 +463,68 @@ const Video = () => {
   const toggleScreenShare = async () => {
     if (!isScreenSharing) {
       try {
-        const newScreenStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
-        setScreenStream(newScreenStream);
-        setIsScreenSharing(true);
-        logDebug('Screen sharing started.');
+        const screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
+        const screenTrack = screenStream.getVideoTracks()[0];
+
+        if (localStream) {
+          localStream.getVideoTracks().forEach(track => track.stop());
+        }
 
         Object.values(peersRef.current).forEach(peer => {
-          const sender = peer._pc.getSenders().find(s => s.track?.kind === 'video' && s.track !== localStream.getVideoTracks()[0]);
+          const sender = peer._pc.getSenders().find(s => s.track?.kind === 'video');
           if (sender) {
-            sender.replaceTrack(newScreenStream.getVideoTracks()[0]);
-          } else {
-            peer.addTrack(newScreenStream.getVideoTracks()[0], newScreenStream);
+            sender.replaceTrack(screenTrack);
+            logDebug(`Replaced video track with screen share for peer ${peer._id || 'unknown'}`);
           }
-          logDebug(`Added screen share track to peer ${peer._id || 'unknown'}`);
         });
 
-        newScreenStream.getVideoTracks()[0].onended = () => {
+        userVideoRef.current.srcObject = screenStream;
+        webcamRef.current.srcObject = screenStream;
+        setLocalStream(screenStream);
+        setIsScreenSharing(true);
+
+        screenTrack.onended = () => {
           logDebug('Screen sharing stopped by user.');
-          stopScreenShare();
+          revertToCamera();
         };
       } catch (err) {
         logDebug(`Error starting screen share: ${err.message}`);
         alert('Failed to start screen sharing.');
       }
     } else {
-      stopScreenShare();
+      revertToCamera();
     }
   };
 
-  const stopScreenShare = () => {
-    if (screenStream) {
-      screenStream.getTracks().forEach(track => track.stop());
-      setScreenStream(null);
-      setIsScreenSharing(false);
-      logDebug('Screen sharing stopped.');
+  const revertToCamera = async () => {
+    try {
+      const cameraStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+      const cameraTrack = cameraStream.getVideoTracks()[0];
+
+      if (localStream) {
+        localStream.getVideoTracks().forEach(track => track.stop());
+      }
 
       Object.values(peersRef.current).forEach(peer => {
-        const sender = peer._pc.getSenders().find(s => s.track?.kind === 'video' && s.track !== localStream.getVideoTracks()[0]);
+        const sender = peer._pc.getSenders().find(s => s.track?.kind === 'video');
         if (sender) {
-          peer.removeTrack(sender);
-          logDebug(`Removed screen share track from peer ${peer._id || 'unknown'}`);
+          sender.replaceTrack(cameraTrack);
+          logDebug(`Replaced video track with camera for peer ${peer._id || 'unknown'}`);
         }
       });
-    }
-  };
 
-  const setProctoredUser = (userId) => {
-    if (!isHost) return;
-    const userName = users[userId]?.userName || 'Unknown';
-    logDebug(`Setting proctored user to ${userName} (${userId})`);
-    socketRef.current.emit('set-proctored-user', { roomId, userId, userName });
+      if (userVideoRef.current && webcamRef.current) {
+        userVideoRef.current.srcObject = cameraStream;
+        webcamRef.current.srcObject = cameraStream;
+        setLocalStream(cameraStream);
+        setIsScreenSharing(false);
+      } else {
+        logDebug('Video refs not available when reverting to camera');
+      }
+    } catch (err) {
+      logDebug(`Error reverting to camera: ${err.message}`);
+      alert('Failed to revert to camera.');
+    }
   };
 
   const createPeer = (userId, initiator) => {
@@ -650,11 +552,6 @@ const Video = () => {
       },
     });
 
-    if (screenStream) {
-      peer.addTrack(screenStream.getVideoTracks()[0], screenStream);
-      logDebug(`Added screen share track to new peer ${userId}`);
-    }
-
     peer.on('signal', (signal) => {
       setTimeout(() => {
         if (signal.type === 'offer') {
@@ -669,52 +566,27 @@ const Video = () => {
 
     peer.on('stream', (stream) => {
       logDebug(`Received stream from ${userId}`);
-      peersRef.current[userId].remoteStreams = peersRef.current[userId].remoteStreams || [];
-      peersRef.current[userId].remoteStreams.push(stream);
-      
+      peersRef.current[userId].remoteStream = stream;
       if (peerVideoRefs.current[userId]) {
         peerVideoRefs.current[userId].srcObject = stream;
         peerVideoRefs.current[userId].play().catch((err) => {
-          logDebug(`Error playing webcam video for ${userId}: ${err.message}`);
+          logDebug(`Error playing video for ${userId}: ${err.message}`);
         });
-      }
-
-      if (peerScreenRefs.current[userId]) {
-        peerScreenRefs.current[userId].srcObject = stream;
-        peerScreenRefs.current[userId].play().catch((err) => {
-          logDebug(`Error playing screen share video for ${userId}: ${err.message}`);
-        });
-      }
-      setConnectionStatus((prev) => ({ ...prev, [userId]: { status: 'connected', userName: users[userId]?.userName || userId } }));
-    });
-
-    peer.on('track', (track, stream) => {
-      logDebug(`Received track from ${userId}: ${track.kind}`);
-      peersRef.current[userId].remoteStreams = peersRef.current[userId].remoteStreams || [];
-      peersRef.current[userId].remoteStreams.push(stream);
-
-      const isScreenTrack = screenStream && stream.getVideoTracks().includes(track);
-      const targetRef = isScreenTrack ? peerScreenRefs.current[userId] : peerVideoRefs.current[userId];
-
-      if (targetRef) {
-        targetRef.srcObject = stream;
-        targetRef.play().catch((err) => {
-          logDebug(`Error playing ${isScreenTrack ? 'screen share' : 'webcam'} video for ${userId}: ${err.message}`);
-        });
+        setConnectionStatus((prev) => ({ ...prev, [userId]: 'connected' }));
       }
     });
 
     peer.on('connect', () => {
       logDebug(`Peer connection established with ${userId}`);
-      setConnectionStatus((prev) => ({ ...prev, [userId]: { status: 'connected', userName: users[userId]?.userName || userId } }));
+      setConnectionStatus((prev) => ({ ...prev, [userId]: 'connected' }));
     });
     peer.on('error', (err) => {
       logDebug(`Peer error (${userId}): ${err.message}`);
-      setConnectionStatus((prev) => ({ ...prev, [userId]: { status: 'failed', userName: users[userId]?.userName || userId } }));
+      setConnectionStatus((prev) => ({ ...prev, [userId]: 'failed' }));
     });
     peer.on('close', () => {
       logDebug(`Peer connection closed for ${userId}`);
-      setConnectionStatus((prev) => ({ ...prev, [userId]: { status: 'disconnected', userName: users[userId]?.userName || userId } }));
+      setConnectionStatus((prev) => ({ ...prev, [userId]: 'disconnected' }));
     });
 
     peersRef.current[userId] = peer;
@@ -784,46 +656,17 @@ const Video = () => {
               placeholder="Enter Room ID"
               className="p-3 border border-gray-300 rounded-lg w-80"
             />
-            <div className="flex gap-4">
-              <button
-                onClick={createRoom}
-                className="bg-green-600 text-white px-6 py-3 rounded-lg hover:bg-green-700"
-              >
-                Create Room (Host)
-              </button>
-              <button
-                onClick={joinRoom}
-                className="bg-blue-600 text-white px-6 py-3 rounded-lg hover:bg-blue-700"
-              >
-                Join Room
-              </button>
-            </div>
+            <button
+              onClick={joinRoom}
+              className="bg-blue-600 text-white px-6 py-3 rounded-lg hover:bg-blue-700"
+            >
+              Join Room
+            </button>
           </div>
         ) : (
           <div>
             <header className="text-center mb-5">
-              <h2 className="text-2xl font-bold text-gray-800">
-                Room: {roomId} {isHost ? '(Host)' : ''}
-              </h2>
-              {isHost && (
-                <div className="mt-3">
-                  <label className="mr-2 font-semibold">Select Proctored User:</label>
-                  <select
-                    onChange={(e) => setProctoredUser(e.target.value)}
-                    value={proctoredUserId || ''}
-                    className="p-2 border border-gray-300 rounded-lg"
-                  >
-                    <option value="">Select a user</option>
-                    {Object.keys(users).map((userId) => (
-                      !users[userId].isHost && (
-                        <option key={userId} value={userId}>
-                          {users[userId].userName} ({shortId(userId)})
-                        </option>
-                      )
-                    ))}
-                  </select>
-                </div>
-              )}
+              <h2 className="text-2xl font-bold text-gray-800">Room: {roomId}</h2>
             </header>
             <div className="flex flex-wrap gap-3 justify-center mb-5">
               <button
@@ -866,100 +709,39 @@ const Video = () => {
             <div className="flex flex-col lg:flex-row gap-5">
               <div className="flex-3 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5">
                 <div className="relative flex flex-col items-center bg-white p-3 rounded-lg shadow-md hover:shadow-lg transition-transform hover:-translate-y-1">
-                  <div className="flex gap-2 mb-2">
-                    <button
-                      onClick={() => setActiveTab('webcam')}
-                      className={`px-4 py-2 rounded-lg ${activeTab === 'webcam' ? 'bg-blue-600 text-white' : 'bg-gray-200 text-gray-700'}`}
-                    >
-                      Webcam
-                    </button>
-                    {isScreenSharing && (
-                      <button
-                        onClick={() => setActiveTab('screen')}
-                        className={`px-4 py-2 rounded-lg ${activeTab === 'screen' ? 'bg-blue-600 text-white' : 'bg-gray-200 text-gray-700'}`}
-                      >
-                        Screen Share
-                      </button>
-                    )}
-                  </div>
-                  {activeTab === 'webcam' ? (
-                    <video
-                      ref={userVideoRef}
-                      autoPlay
-                      muted
-                      playsInline
-                      className="w-full h-60 bg-black rounded-lg object-cover"
-                    />
-                  ) : (
-                    <video
-                      ref={userScreenRef}
-                      autoPlay
-                      muted
-                      playsInline
-                      className="w-full h-60 bg-black rounded-lg object-cover"
-                    />
-                  )}
+                  <video
+                    ref={userVideoRef}
+                    autoPlay
+                    muted
+                    playsInline
+                    className="w-full h-60 bg-black rounded-lg object-cover"
+                  />
                   <div className="mt-2 font-semibold text-gray-700">
-                    You ({userName}) {isHost ? '(Host)' : proctoringActive && activeTab === 'webcam' && faceDetected ? '✅ Face Detected' : proctoringActive && activeTab === 'webcam' ? '❌ Face Not Detected' : ''}
+                    You ({userName}) {faceDetected ? '✅ Face Detected' : '❌ Face Not Detected'}
                   </div>
-                  {proctoringActive && <div className="text-sm text-gray-600">Violations: {cheatCount}/{MAX_VIOLATIONS}</div>}
+                  <div className="text-sm text-gray-600">Violations: {cheatCount}/{MAX_VIOLATIONS}</div>
                   {warningMessage && <div className="text-sm text-red-600">{warningMessage}</div>}
                 </div>
                 {Object.keys(peers).map((userId) => (
-                  <div key={userId} className="relative flex flex-col items-center bg-white p-3 rounded-lg shadow-md hover:shadow-lg transition-transform hover:-translate-y-1">
-                    <div className="flex gap-2 mb-2">
-                      <button
-                        onClick={() => setActiveTab(`webcam-${userId}`)}
-                        className={`px-4 py-2 rounded-lg ${activeTab === `webcam-${userId}` ? 'bg-blue-600 text-white' : 'bg-gray-200 text-gray-700'}`}
-                      >
-                        Webcam
-                      </button>
-                      {peersRef.current[userId]?.remoteStreams?.length > 1 && (
-                        <button
-                          onClick={() => setActiveTab(`screen-${userId}`)}
-                          className={`px-4 py-2 rounded-lg ${activeTab === `screen-${userId}` ? 'bg-blue-600 text-white' : 'bg-gray-200 text-gray-700'}`}
-                        >
-                          Screen Share
-                        </button>
-                      )}
-                    </div>
-                    {activeTab === `webcam-${userId}` ? (
-                      <video
-                        ref={(el) => {
-                          if (el && !peerVideoRefs.current[userId]) {
-                            peerVideoRefs.current[userId] = el;
-                            if (peersRef.current[userId]?.remoteStreams?.[0]) {
-                              el.srcObject = peersRef.current[userId].remoteStreams[0];
-                              el.play().catch((err) => {
-                                logDebug(`Error playing webcam video for ${userId}: ${err.message}`);
-                              });
-                            }
+                  <div key={userId} className="flex flex-col items-center bg-white p-3 rounded-lg shadow-md hover:shadow-lg transition-transform hover:-translate-y-1">
+                    <video
+                      ref={(el) => {
+                        if (el && !peerVideoRefs.current[userId]) {
+                          peerVideoRefs.current[userId] = el;
+                          if (peersRef.current[userId]?.remoteStream) {
+                            el.srcObject = peersRef.current[userId].remoteStream;
+                            el.play().catch((err) => {
+                              logDebug(`Error playing video for ${userId}: ${err.message}`);
+                            });
                           }
-                        }}
-                        autoPlay
-                        playsInline
-                        className="w-full h-60 bg-black rounded-lg object-cover"
-                      />
-                    ) : (
-                      <video
-                        ref={(el) => {
-                          if (el && !peerScreenRefs.current[userId]) {
-                            peerScreenRefs.current[userId] = el;
-                            if (peersRef.current[userId]?.remoteStreams?.[1]) {
-                              el.srcObject = peersRef.current[userId].remoteStreams[1];
-                              el.play().catch((err) => {
-                                logDebug(`Error playing screen share video for ${userId}: ${err.message}`);
-                              });
-                            }
-                          }
-                        }}
-                        autoPlay
-                        playsInline
-                        className="w-full h-60 bg-black rounded-lg object-cover"
-                      />
-                    )}
+                        }
+                      }}
+                      autoPlay
+                      playsInline
+                      className="w-full h-60 bg-black rounded-lg object-cover"
+                    />
                     <div className="mt-2 font-semibold text-gray-700">
-                      {users[userId]?.userName || `Peer: ${shortId(userId)}`} {users[userId]?.isHost ? '(Host)' : proctoredUserId === userId ? '(Proctored)' : ''} ({connectionStatus[userId]?.status || 'connecting'})
+                      {connectionStatus[userId]?.userName || `Peer: ${shortId(userId)}`} ({connectionStatus[userId]?.status || 'connecting'})
                     </div>
                   </div>
                 ))}
@@ -1023,3 +805,4 @@ const Video = () => {
 };
 
 export default Video;
+
