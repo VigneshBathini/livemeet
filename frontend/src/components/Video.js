@@ -3,7 +3,7 @@ import io from 'socket.io-client';
 import SimplePeer from 'simple-peer';
 import * as faceapi from 'face-api.js';
 
-const SIGNALING_SERVER_URL = 'http://localhost:3000'; // Update to match your server URL
+const SIGNALING_SERVER_URL = 'https://livemeet-ribm.onrender.com' ||'http://localhost:3000' ; 
 
 class ErrorBoundary extends React.Component {
   state = { hasError: false };
