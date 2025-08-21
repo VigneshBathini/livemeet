@@ -3,7 +3,7 @@ import io from 'socket.io-client';
 import SimplePeer from 'simple-peer';
 import * as faceapi from 'face-api.js';
 
-const SIGNALING_SERVER_URL = 'https://livemeet-ribm.onrender.com/'; // Adjust if signaling server is on a different port
+const SIGNALING_SERVER_URL = 'https://livemeet-ribm.onrender.com' || 'http://localhost:3001'; 
 
 class ErrorBoundary extends React.Component {
   state = { hasError: false };
@@ -23,8 +23,8 @@ class ErrorBoundary extends React.Component {
 const Video = () => {
   const [roomId, setRoomId] = useState('');
   const [userName, setUserName] = useState('');
-  const [localStream, setLocalStream] = useState(null); // Webcam stream
-  const [screenStream, setScreenStream] = useState(null); // Screen share stream
+  const [localStream, setLocalStream] = useState(null); 
+  const [screenStream, setScreenStream] = useState(null); 
   const [inRoom, setInRoom] = useState(false);
   const [peers, setPeers] = useState({});
   const [debugLog, setDebugLog] = useState([]);

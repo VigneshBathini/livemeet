@@ -1,20 +1,36 @@
 const express = require('express');
 const http = require('http');
-const socketIo = require('socket.io');
+const { Server } = require('socket.io');
+const cors = require('cors');
+const path = require('path');
 
 const app = express();
 const server = http.createServer(app);
-const io = socketIo(server, {
+
+// Serve static files from the React frontend build folder
+app.use(express.static(path.join(__dirname, '..', 'frontend', 'build')));
+
+// CORS configuration
+app.use(cors({
+  origin: ['https://livemeet-ribm.onrender.com', 'http://localhost:3001'],
+  methods: ['GET', 'POST'],
+  credentials: true,
+  allowedHeaders: ['Content-Type', 'Authorization']
+}));
+
+const io = new Server(server, {
   cors: {
-    origin: 'https://livemeet-ribm.onrender.com',
+    origin: ['https://livemeet-ribm.onrender.com', 'http://localhost:3001'],
     methods: ['GET', 'POST'],
-  },
+    credentials: true,
+    allowedHeaders: ['Content-Type', 'Authorization']
+  }
 });
 
 const rooms = {};
 
 io.on('connection', (socket) => {
-  console.log(`User connected: ${socket.id}`);
+  console.log(`New user connected: ${socket.id}`);
 
   socket.on('join-room', (roomId, userId, userName, isHost) => {
     socket.join(roomId);
@@ -23,7 +39,10 @@ io.on('connection', (socket) => {
     }
     rooms[roomId].users[userId] = { userName, isHost };
     socket.to(roomId).emit('user-joined', userId, userName, isHost);
-    console.log(`User ${userName} (${userId}) joined room ${roomId}, isHost: ${isHost}`);
+    console.log(`${userId} (${userName}) joined room ${roomId}, isHost: ${isHost}`);
+    io.in(roomId).allSockets().then(sockets => {
+      console.log(`Users in room ${roomId}: ${[...sockets].join(', ')}`);
+    });
   });
 
   socket.on('offer', (data) => {
@@ -39,10 +58,11 @@ io.on('connection', (socket) => {
   });
 
   socket.on('chat-message', (data) => {
+    console.log(`Chat message from ${socket.id} (${data.userName}) in room ${data.roomId}: ${data.message}`);
     socket.to(data.roomId).emit('chat-message', {
-      from: socket.id,
-      userName: data.userName,
       message: data.message,
+      from: socket.id,
+      userName: data.userName
     });
   });
 
@@ -79,6 +99,7 @@ io.on('connection', (socket) => {
   });
 });
 
-server.listen(3000, () => {
-  console.log('Signaling server running on port 3000');
+const PORT = process.env.PORT || 3000;
+server.listen(PORT, '0.0.0.0', () => {
+  console.log(`Server running on port ${PORT}`);
 });
