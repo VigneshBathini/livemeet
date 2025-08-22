@@ -173,7 +173,6 @@ const Video = () => {
       });
 
       socketRef.current.on('room-created', (newRoomId) => {
-        console.log('Room created, newRoomId:', newRoomId);
         logDebug(`Room created with ID: ${newRoomId}`);
         setRoomId(newRoomId);
         setInRoom(true);
@@ -190,7 +189,7 @@ const Video = () => {
           const peer = createPeer(userId, true);
           if (peer) setPeers((prev) => ({ ...prev, [userId]: peer }));
         } else {
-          logDebug('Local stream not available when user joined, delaying peer creation');
+          logDebug('Local stream not available when user joined, delaying peer creation until stream is ready');
         }
       });
 
@@ -203,6 +202,7 @@ const Video = () => {
               setLocalStream(stream);
               setIsVideoOn(true);
               setIsAudioOn(true);
+              assignStreamToVideoElements(stream);
               const peer = createPeer(data.from, false);
               if (peer) {
                 peer.signal(data.signal);
@@ -380,6 +380,21 @@ const Video = () => {
     assignStream();
   }, [localStream, inRoom, logDebug]);
 
+  const assignStreamToVideoElements = (stream) => {
+    if (userVideoRef.current && webcamRef.current) {
+      userVideoRef.current.srcObject = stream;
+      webcamRef.current.srcObject = stream;
+      userVideoRef.current.play().catch((err) => {
+        logDebug(`Error playing local video: ${err.message}`);
+      });
+      webcamRef.current.play().catch((err) => {
+        logDebug(`Error playing webcam video: ${err.message}`);
+      });
+      logDebug('Local stream assigned to video elements.');
+      setVideoReady(true);
+    }
+  };
+
   useEffect(() => {
     if (chatRef.current) {
       chatRef.current.scrollTop = chatRef.current.scrollHeight;
@@ -497,9 +512,9 @@ const Video = () => {
       setLocalStream(stream);
       setIsVideoOn(true);
       setIsAudioOn(true);
-      logDebug('Local stream acquired successfully.');
+      assignStreamToVideoElements(stream); // Assign stream before proceeding
       socketRef.current.emit('create-room', socketRef.current.id, userName);
-      console.log('createRoom called, waiting for room-created');
+      logDebug('Local stream acquired and room creation emitted.');
     } catch (err) {
       logDebug(`Error accessing media: ${err.name} - ${err.message}`);
       alert('Failed to access camera/microphone.');
@@ -530,9 +545,9 @@ const Video = () => {
       setLocalStream(stream);
       setIsVideoOn(true);
       setIsAudioOn(true);
-      logDebug('Local stream acquired successfully.');
+      assignStreamToVideoElements(stream); // Assign stream before proceeding
       socketRef.current.emit('join-room', roomId, socketRef.current.id, userName);
-      setInRoom(true);
+      logDebug('Local stream acquired and room join emitted.');
     } catch (err) {
       logDebug(`Error accessing media: ${err.name} - ${err.message}`);
       alert('Failed to access camera/microphone.');
@@ -642,8 +657,7 @@ const Video = () => {
   const createPeer = (userId, initiator) => {
     logDebug(`Creating peer for ${userId}, initiator: ${initiator}`);
     if (!localStream) {
-      logDebug(`Local stream unavailable for ${userId}, retrying...`);
-      setTimeout(() => createPeer(userId, initiator), 1000);
+      logDebug(`Local stream unavailable for ${userId}, aborting peer creation`);
       return null;
     }
 
@@ -729,18 +743,8 @@ const Video = () => {
         logDebug(`Error playing video for ${userId}: ${err.message}`);
       });
     } else {
-      // Create a new video element if not present
-      const videoElement = document.createElement('video');
-      videoElement.autoPlay = true;
-      videoElement.playsInline = true;
-      videoElement.className = 'w-full h-60 bg-black rounded-lg object-cover';
-      peerVideoRefs.current[userId] = videoElement;
-      videoElement.srcObject = stream;
-      videoElement.play().catch((err) => {
-        logDebug(`Error playing video for ${userId} on new element: ${err.message}`);
-      });
-      // Force re-render or append to DOM (you may need to adjust this based on your render logic)
-      setPeers((prev) => ({ ...prev })); // Trigger re-render
+      // Retry after a short delay if the element isn't ready
+      setTimeout(() => updatePeerVideo(userId, stream), 500);
     }
   };
 
