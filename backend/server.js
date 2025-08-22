@@ -33,10 +33,8 @@ const io = new Server(server, {
 // Store room data: { roomId: { hostId: string, users: { [socketId]: { userName: string } } } }
 const rooms = {};
 
-// Test endpoint
 app.get('/test', (req, res) => res.send('Server is running'));
 
-// Handle all other routes with React's index.html
 app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, '..', 'frontend', 'build', 'index.html'));
 });
@@ -44,13 +42,9 @@ app.get('*', (req, res) => {
 io.on('connection', (socket) => {
   console.log('New user connected:', socket.id);
 
-  // Handle room creation
   socket.on('create-room', (userId, userName) => {
     const roomId = uuidv4();
-    rooms[roomId] = {
-      hostId: socket.id,
-      users: { [socket.id]: { userName } }
-    };
+    rooms[roomId] = { hostId: socket.id, users: { [socket.id]: { userName } } };
     socket.join(roomId);
     socket.emit('room-created', roomId);
     console.log(`Room ${roomId} created by ${socket.id} (${userName})`);
@@ -59,7 +53,6 @@ io.on('connection', (socket) => {
     });
   });
 
-  // Handle room joining
   socket.on('join-room', (roomId, userId, userName) => {
     if (!rooms[roomId]) {
       socket.emit('error', { message: 'Room does not exist' });
@@ -68,14 +61,13 @@ io.on('connection', (socket) => {
     }
     rooms[roomId].users[socket.id] = { userName };
     socket.join(roomId);
-    socket.to(roomId).emit('user-joined', socket.id, userName);
+    socket.to(roomId).emit('user-joined', socket.id, userName); // Use socket.id for consistency
     console.log(`${socket.id} (${userName}) joined room ${roomId}`);
     io.in(roomId).allSockets().then(sockets => {
       console.log(`Users in room ${roomId}: ${[...sockets].join(', ')}`);
     });
   });
 
-  // Handle proctoring toggle (only host can trigger)
   socket.on('toggle-proctoring', (data) => {
     const { roomId, userId, enable } = data;
     if (!rooms[roomId] || rooms[roomId].hostId !== socket.id) {
@@ -92,7 +84,6 @@ io.on('connection', (socket) => {
     console.log(`Proctoring ${enable ? 'enabled' : 'disabled'} for ${userId} in room ${roomId} by host ${socket.id}`);
   });
 
-  // Handle cheat detection
   socket.on('cheat-detected', (data) => {
     const { roomId, userId, userName, cheatLog } = data;
     if (!rooms[roomId]) return;
@@ -103,33 +94,31 @@ io.on('connection', (socket) => {
     }
   });
 
-  // WebRTC signaling
   socket.on('offer', (data) => {
-    console.log(`Relaying offer from ${socket.id} to ${data.to} with signal:`, JSON.stringify(data.signal).slice(0, 100));
-    socket.to(data.to).emit('offer', { signal: data.signal, from: socket.id });
+    console.log(`Relaying offer from ${socket.id} to ${data.to} in room ${data.roomId || 'unknown'}`);
+    socket.to(data.to).emit('offer', { signal: data.signal, from: socket.id, roomId: data.roomId });
   });
 
   socket.on('answer', (data) => {
-    console.log(`Relaying answer from ${socket.id} to ${data.to} with signal:`, JSON.stringify(data.signal).slice(0, 100));
-    socket.to(data.to).emit('answer', { signal: data.signal, from: socket.id });
+    console.log(`Relaying answer from ${socket.id} to ${data.to} in room ${data.roomId || 'unknown'}`);
+    socket.to(data.to).emit('answer', { signal: data.signal, from: socket.id, roomId: data.roomId });
   });
 
   socket.on('ice-candidate', (data) => {
-    console.log(`Relaying ICE candidate from ${socket.id} to ${data.to} with candidate:`, JSON.stringify(data.candidate).slice(0, 100));
-    socket.to(data.to).emit('ice-candidate', { candidate: data.candidate, from: socket.id });
+    console.log(`Relaying ICE candidate from ${socket.id} to ${data.to} in room ${data.roomId || 'unknown'}`);
+    socket.to(data.to).emit('ice-candidate', { candidate: data.candidate, from: socket.id, roomId: data.roomId });
   });
 
-  // Handle chat messages
   socket.on('chat-message', (data) => {
     console.log(`Chat message from ${socket.id} (${data.userName}) in room ${data.roomId}: ${data.message}`);
     socket.to(data.roomId).emit('chat-message', {
       message: data.message,
       from: socket.id,
-      userName: data.userName
+      userName: data.userName,
+      roomId: data.roomId
     });
   });
 
-  // Handle disconnection
   socket.on('disconnect', () => {
     console.log('User disconnected:', socket.id);
     for (const roomId in rooms) {
