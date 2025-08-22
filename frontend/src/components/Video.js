@@ -3,7 +3,7 @@ import io from 'socket.io-client';
 import SimplePeer from 'simple-peer';
 import * as faceapi from 'face-api.js';
 
-const SIGNALING_SERVER_URL = 'https://livemeet-ribm.onrender.com'; // Adjust if signaling server is on a different port
+const SIGNALING_SERVER_URL = 'https://livemeet-ribm.onrender.com';
 
 class ErrorBoundary extends React.Component {
   state = { hasError: false };
@@ -25,6 +25,7 @@ const Video = () => {
   const [userName, setUserName] = useState('');
   const [localStream, setLocalStream] = useState(null);
   const [inRoom, setInRoom] = useState(false);
+  const [isHost, setIsHost] = useState(false);
   const [peers, setPeers] = useState({});
   const [debugLog, setDebugLog] = useState([]);
   const [isVideoOn, setIsVideoOn] = useState(true);
@@ -49,6 +50,7 @@ const Video = () => {
   const [alertLogs, setAlertLogs] = useState([]);
   const [lastFacePosition, setLastFacePosition] = useState(null);
   const [multipleFacesCount, setMultipleFacesCount] = useState(0);
+  const [proctoredUsers, setProctoredUsers] = useState({}); // Tracks which users are proctored
 
   const socketRef = useRef();
   const userVideoRef = useRef();
@@ -94,7 +96,18 @@ const Video = () => {
     setCheatCount((prev) => {
       const newCount = prev + 1;
       const timestamp = new Date().toLocaleString();
-      setCheatLogs((logs) => [...logs, { message, timestamp, type: violationType }]);
+      const logEntry = { message, timestamp, type: violationType };
+      setCheatLogs((logs) => [...logs, logEntry]);
+
+      // Send cheat log to host if user is proctored
+      if (proctoringActive && socketRef.current) {
+        socketRef.current.emit('cheat-detected', {
+          roomId,
+          userId: socketRef.current.id,
+          userName,
+          cheatLog: logEntry,
+        });
+      }
 
       if (newCount >= MAX_VIOLATIONS) {
         window.speechSynthesis.cancel();
@@ -116,7 +129,7 @@ const Video = () => {
     utterance.pitch = 1.0;
     utterance.rate = 0.9;
     window.speechSynthesis.speak(utterance);
-  }, [logDebug]);
+  }, [logDebug, proctoringActive, roomId, userName]);
 
   useEffect(() => {
     if (alertQueue.length === 0) return;
@@ -174,6 +187,7 @@ const Video = () => {
     initialize();
 
     socketRef.current = io(SIGNALING_SERVER_URL, {
+      //transports: ['websocket', 'polling'],
       transports: ['websocket', 'polling'],
       reconnection: true,
       reconnectionAttempts: Infinity,
@@ -185,7 +199,7 @@ const Video = () => {
     socketRef.current.on('connect', () => {
       logDebug('Connected to signaling server');
       if (inRoom) {
-        socketRef.current.emit('join-room', roomId, socketRef.current.id, userName);
+        socketRef.current.emit(isHost ? 'create-room' : 'join-room', roomId, socketRef.current.id, userName);
       }
     });
     socketRef.current.on('connect_error', (err) => {
@@ -198,9 +212,16 @@ const Video = () => {
       socketRef.current.connect();
     });
 
+    socketRef.current.on('room-created', (newRoomId) => {
+  console.log('Room created, newRoomId:', newRoomId);
+  logDebug(`Room created with ID: ${newRoomId}`);
+  setRoomId(newRoomId);
+  setInRoom(true);
+  setIsHost(true);
+});
     socketRef.current.on('user-joined', (userId, userName) => {
       logDebug(`User joined: ${userId} (${userName})`);
-      setConnectionStatus((prev) => ({ ...prev, [userId]: { status: 'connecting', userName } }));
+      setConnectionStatus((prev) => ({ ...prev, [userId]: { status: 'connecting', userName, proctoring: false } }));
       const peer = createPeer(userId, true);
       setPeers((prev) => ({ ...prev, [userId]: peer }));
     });
@@ -268,6 +289,22 @@ const Video = () => {
         { from: data.from, userName: data.userName || 'Unknown', message: data.message, time: new Date().toLocaleTimeString() },
       ]);
     });
+    socketRef.current.on('toggle-proctoring', (data) => {
+      logDebug(`Received proctoring toggle: ${data.userId} -> ${data.enable}`);
+      if (data.userId === socketRef.current.id) {
+        setProctoringActive(data.enable);
+      }
+    });
+    socketRef.current.on('cheat-detected', (data) => {
+      if (isHost) {
+        logDebug(`Cheat detected from ${data.userId} (${data.userName}): ${data.cheatLog.message}`);
+        setCheatLogs((prev) => [...prev, {
+          ...data.cheatLog,
+          userId: data.userId,
+          userName: data.userName,
+        }]);
+      }
+    });
 
     return () => {
       socketRef.current.disconnect();
@@ -276,7 +313,7 @@ const Video = () => {
         webcamRef.current.srcObject.getTracks().forEach(track => track.stop());
       }
     };
-  }, [inRoom, roomId, userName, logDebug]);
+  }, [inRoom, roomId, userName, logDebug, isHost]);
 
   useEffect(() => {
     if (!localStream || !inRoom) return;
@@ -284,7 +321,7 @@ const Video = () => {
     const assignStream = (attempt = 1) => {
       if (userVideoRef.current && webcamRef.current) {
         userVideoRef.current.srcObject = localStream;
-        webcamRef.current.srcObject = localStream; // Fixed: Removed .video
+        webcamRef.current.srcObject = localStream;
         userVideoRef.current.play().catch((err) => {
           logDebug(`Error playing local video: ${err.message}`);
         });
@@ -330,7 +367,7 @@ const Video = () => {
         return;
       }
 
-      const video = webcamRef.current; // Fixed: Use webcamRef.current directly
+      const video = webcamRef.current;
       if (video.readyState !== 4) {
         logDebug('Video not ready:', video.readyState);
         return;
@@ -402,6 +439,34 @@ const Video = () => {
     }
   };
 
+  const createRoom = async () => {
+  if (!userName.trim()) {
+    logDebug('Please enter a username.');
+    alert('Please enter a username.');
+    return;
+  }
+
+  if (!(await checkPermissions())) {
+    logDebug('Camera/microphone permissions denied.');
+    alert('Please grant camera and microphone permissions.');
+    return;
+  }
+
+  logDebug(`Creating room as ${userName}`);
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+    setLocalStream(stream);
+    setIsVideoOn(true);
+    setIsAudioOn(true);
+    logDebug('Local stream acquired successfully.');
+    socketRef.current.emit('create-room', socketRef.current.id, userName);
+    console.log('createRoom called, waiting for room-created');
+  } catch (err) {
+    logDebug(`Error accessing media: ${err.name} - ${err.message}`);
+    alert('Failed to access camera/microphone.');
+  }
+};
+
   const joinRoom = async () => {
     if (!roomId.trim()) {
       logDebug('Please enter a Room ID.');
@@ -426,16 +491,24 @@ const Video = () => {
       setLocalStream(stream);
       setIsVideoOn(true);
       setIsAudioOn(true);
-      setProctoringActive(true);
       logDebug('Local stream acquired successfully.');
+      socketRef.current.emit('join-room', roomId, socketRef.current.id, userName);
+      setInRoom(true);
     } catch (err) {
       logDebug(`Error accessing media: ${err.name} - ${err.message}`);
       alert('Failed to access camera/microphone.');
-      return;
     }
+  };
 
-    socketRef.current.emit('join-room', roomId, socketRef.current.id, userName);
-    setInRoom(true);
+  const toggleProctoring = (userId) => {
+    if (!isHost) return;
+    socketRef.current.emit('toggle-proctoring', { roomId, userId, enable: !proctoredUsers[userId] });
+    setProctoredUsers((prev) => ({ ...prev, [userId]: !prev[userId] }));
+    setConnectionStatus((prev) => ({
+      ...prev,
+      [userId]: { ...prev[userId], proctoring: !prev[userId]?.proctoring },
+    }));
+    logDebug(`Toggled proctoring for ${userId}: ${!proctoredUsers[userId]}`);
   };
 
   const toggleVideo = () => {
@@ -455,7 +528,7 @@ const Video = () => {
       if (audioTrack) {
         audioTrack.enabled = !audioTrack.enabled;
         setIsAudioOn(audioTrack.enabled);
-        logDebug(`Audio track ${audioTrack.enabled ? 'disabled' : 'enabled'}`);
+        logDebug(`Audio track ${audioTrack.enabled ? 'enabled' : 'disabled'}`);
       }
     }
   };
@@ -572,21 +645,21 @@ const Video = () => {
         peerVideoRefs.current[userId].play().catch((err) => {
           logDebug(`Error playing video for ${userId}: ${err.message}`);
         });
-        setConnectionStatus((prev) => ({ ...prev, [userId]: 'connected' }));
+        setConnectionStatus((prev) => ({ ...prev, [userId]: { ...prev[userId], status: 'connected' } }));
       }
     });
 
     peer.on('connect', () => {
       logDebug(`Peer connection established with ${userId}`);
-      setConnectionStatus((prev) => ({ ...prev, [userId]: 'connected' }));
+      setConnectionStatus((prev) => ({ ...prev, [userId]: { ...prev[userId], status: 'connected' } }));
     });
     peer.on('error', (err) => {
       logDebug(`Peer error (${userId}): ${err.message}`);
-      setConnectionStatus((prev) => ({ ...prev, [userId]: 'failed' }));
+      setConnectionStatus((prev) => ({ ...prev, [userId]: { ...prev[userId], status: 'failed' } }));
     });
     peer.on('close', () => {
       logDebug(`Peer connection closed for ${userId}`);
-      setConnectionStatus((prev) => ({ ...prev, [userId]: 'disconnected' }));
+      setConnectionStatus((prev) => ({ ...prev, [userId]: { ...prev[userId], status: 'disconnected' } }));
     });
 
     peersRef.current[userId] = peer;
@@ -649,24 +722,36 @@ const Video = () => {
               placeholder="Enter your username"
               className="p-3 border border-gray-300 rounded-lg w-80"
             />
-            <input
-              type="text"
-              value={roomId}
-              onChange={(e) => setRoomId(e.target.value)}
-              placeholder="Enter Room ID"
-              className="p-3 border border-gray-300 rounded-lg w-80"
-            />
-            <button
-              onClick={joinRoom}
-              className="bg-blue-600 text-white px-6 py-3 rounded-lg hover:bg-blue-700"
-            >
-              Join Room
-            </button>
+            <div className="flex flex-col gap-2 w-80">
+              <button
+                onClick={createRoom}
+                className="bg-green-600 text-white px-6 py-3 rounded-lg hover:bg-green-700"
+              >
+                Create Room (Host)
+              </button>
+              <div className="flex flex-col gap-2">
+                <input
+                  type="text"
+                  value={roomId}
+                  onChange={(e) => setRoomId(e.target.value)}
+                  placeholder="Enter Room ID to Join"
+                  className="p-3 border border-gray-300 rounded-lg"
+                />
+                <button
+                  onClick={joinRoom}
+                  className="bg-blue-600 text-white px-6 py-3 rounded-lg hover:bg-blue-700"
+                >
+                  Join Room
+                </button>
+              </div>
+            </div>
           </div>
         ) : (
           <div>
             <header className="text-center mb-5">
-              <h2 className="text-2xl font-bold text-gray-800">Room: {roomId}</h2>
+              <h2 className="text-2xl font-bold text-gray-800">
+                Room: {roomId} {isHost ? '(Host)' : '(Participant)'}
+              </h2>
             </header>
             <div className="flex flex-wrap gap-3 justify-center mb-5">
               <button
@@ -717,7 +802,7 @@ const Video = () => {
                     className="w-full h-60 bg-black rounded-lg object-cover"
                   />
                   <div className="mt-2 font-semibold text-gray-700">
-                    You ({userName}) {faceDetected ? '✅ Face Detected' : '❌ Face Not Detected'}
+                    You ({userName}) {proctoringActive && faceDetected ? '✅ Face Detected' : proctoringActive ? '❌ Face Not Detected' : ''}
                   </div>
                   <div className="text-sm text-gray-600">Violations: {cheatCount}/{MAX_VIOLATIONS}</div>
                   {warningMessage && <div className="text-sm text-red-600">{warningMessage}</div>}
@@ -743,6 +828,14 @@ const Video = () => {
                     <div className="mt-2 font-semibold text-gray-700">
                       {connectionStatus[userId]?.userName || `Peer: ${shortId(userId)}`} ({connectionStatus[userId]?.status || 'connecting'})
                     </div>
+                    {isHost && (
+                      <button
+                        onClick={() => toggleProctoring(userId)}
+                        className={`mt-2 px-4 py-2 rounded-lg ${connectionStatus[userId]?.proctoring ? 'bg-red-600 hover:bg-red-700' : 'bg-green-600 hover:bg-green-700'} text-white`}
+                      >
+                        {connectionStatus[userId]?.proctoring ? 'Disable Proctoring' : 'Enable Proctoring'}
+                      </button>
+                    )}
                   </div>
                 ))}
               </div>
@@ -779,6 +872,16 @@ const Video = () => {
                 </div>
               </div>
             </div>
+            {isHost && (
+              <div className="mt-5 p-4 bg-white rounded-lg shadow-md max-h-48 overflow-y-auto">
+                <h3 className="text-lg font-semibold mb-3">Proctoring Alerts</h3>
+                {cheatLogs.map((log, index) => (
+                  <p key={index} className="text-sm text-gray-700">
+                    {log.timestamp} - {log.userName} ({shortId(log.userId)}): {log.message} ({log.type})
+                  </p>
+                ))}
+              </div>
+            )}
             {showDebug && (
               <div className="mt-5 p-4 bg-white rounded-lg shadow-md max-h-48 overflow-y-auto">
                 <h4 className="text-lg font-semibold">Debug Log:</h4>
@@ -805,4 +908,3 @@ const Video = () => {
 };
 
 export default Video;
-
