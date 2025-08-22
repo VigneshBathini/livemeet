@@ -50,7 +50,7 @@ const Video = () => {
   const [alertLogs, setAlertLogs] = useState([]);
   const [lastFacePosition, setLastFacePosition] = useState(null);
   const [multipleFacesCount, setMultipleFacesCount] = useState(0);
-  const [proctoredUsers, setProctoredUsers] = useState({}); // Tracks which users are proctored
+  const [proctoredUsers, setProctoredUsers] = useState({});
 
   const socketRef = useRef();
   const userVideoRef = useRef();
@@ -99,7 +99,6 @@ const Video = () => {
       const logEntry = { message, timestamp, type: violationType };
       setCheatLogs((logs) => [...logs, logEntry]);
 
-      // Send cheat log to host if user is proctored
       if (proctoringActive && socketRef.current) {
         socketRef.current.emit('cheat-detected', {
           roomId,
@@ -147,6 +146,151 @@ const Video = () => {
     }
   }, [alertQueue, currentAlert]);
 
+  const initializeSocket = useCallback(() => {
+    if (!socketRef.current) {
+      socketRef.current = io(SIGNALING_SERVER_URL, {
+        transports: ['websocket', 'polling'],
+        reconnection: true,
+        reconnectionAttempts: Infinity,
+        reconnectionDelay: 1000,
+        reconnectionDelayMax: 5000,
+        randomizationFactor: 0.5,
+      });
+
+      socketRef.current.on('connect', () => {
+        logDebug('Connected to signaling server');
+      });
+
+      socketRef.current.on('connect_error', (err) => {
+        logDebug(`Socket connection error: ${err.message}`);
+        setTimeout(() => socketRef.current.connect(), 2000);
+      });
+
+      socketRef.current.on('reconnect', (attempt) => logDebug(`Reconnected after attempt ${attempt}`));
+      socketRef.current.on('reconnect_failed', () => {
+        logDebug('Reconnection failed. Retrying manually...');
+        socketRef.current.connect();
+      });
+
+      socketRef.current.on('room-created', (newRoomId) => {
+        console.log('Room created, newRoomId:', newRoomId);
+        logDebug(`Room created with ID: ${newRoomId}`);
+        setRoomId(newRoomId);
+        setInRoom(true);
+        setIsHost(true);
+      });
+
+      socketRef.current.on('user-joined', (userId, userName) => {
+        logDebug(`User joined: ${userId} (${userName})`);
+        setConnectionStatus((prev) => ({
+          ...prev,
+          [userId]: { status: 'connecting', userName, proctoring: false }
+        }));
+        const peer = createPeer(userId, true);
+        setPeers((prev) => ({ ...prev, [userId]: peer }));
+      });
+
+      socketRef.current.on('offer', (data) => {
+        logDebug(`Received offer from ${data.from}`);
+        let peer = peersRef.current[data.from];
+        if (!peer) {
+          peer = createPeer(data.from, false);
+          peersRef.current[data.from] = peer;
+          setPeers((prev) => ({ ...prev, [data.from]: peer }));
+        }
+        peer.signal(data.signal);
+      });
+
+      socketRef.current.on('answer', (data) => {
+        logDebug(`Received answer from ${data.from}`);
+        const peer = peersRef.current[data.from];
+        if (peer) {
+          peer.signal(data.signal);
+        } else {
+          logDebug(`No peer for ${data.from}, queuing answer...`);
+          if (!pendingCandidates.current[data.from]) {
+            pendingCandidates.current[data.from] = [];
+          }
+          pendingCandidates.current[data.from].push(data.signal);
+        }
+      });
+
+      socketRef.current.on('ice-candidate', (data) => {
+        logDebug(`Received ICE candidate from ${data.from}`);
+        const peer = peersRef.current[data.from];
+        if (peer) {
+          peer.signal({ candidate: data.candidate });
+        } else {
+          logDebug(`Peer not ready for ICE candidate from ${data.from}, queuing...`);
+          if (!pendingCandidates.current[data.from]) {
+            pendingCandidates.current[data.from] = [];
+          }
+          pendingCandidates.current[data.from].push({ candidate: data.candidate });
+        }
+      });
+
+      socketRef.current.on('user-left', (userId) => {
+        logDebug(`User left: ${userId}`);
+        setConnectionStatus((prev) => {
+          const newStatus = { ...prev };
+          delete newStatus[userId];
+          return newStatus;
+        });
+        if (peersRef.current[userId]) {
+          peersRef.current[userId].destroy();
+          delete peersRef.current[userId];
+          setPeers((prev) => {
+            const newPeers = { ...prev };
+            delete newPeers[userId];
+            return newPeers;
+          });
+          if (peerVideoRefs.current[userId]) {
+            peerVideoRefs.current[userId].srcObject = null;
+            delete peerVideoRefs.current[userId];
+          }
+        }
+      });
+
+      socketRef.current.on('chat-message', (data) => {
+        logDebug(`Received chat message from ${data.from} (${data.userName}): ${data.message}`);
+        setMessages((prev) => [
+          ...prev,
+          { from: data.from, userName: data.userName || 'Unknown', message: data.message, time: new Date().toLocaleTimeString() },
+        ]);
+      });
+
+      socketRef.current.on('toggle-proctoring', (data) => {
+        logDebug(`Received proctoring toggle: ${data.userId} -> ${data.enable}`);
+        if (data.userId === socketRef.current.id) {
+          setProctoringActive(data.enable);
+        }
+      });
+
+      socketRef.current.on('cheat-detected', (data) => {
+        if (isHost) {
+          logDebug(`Cheat detected from ${data.userId} (${data.userName}): ${data.cheatLog.message}`);
+          setCheatLogs((prev) => [...prev, {
+            ...data.cheatLog,
+            userId: data.userId,
+            userName: data.userName,
+          }]);
+        }
+      });
+
+      return () => {
+        socketRef.current.disconnect();
+        if (faceDetectionIntervalRef.current) clearInterval(faceDetectionIntervalRef.current);
+        if (webcamRef.current?.srcObject) {
+          webcamRef.current.srcObject.getTracks().forEach(track => track.stop());
+        }
+      };
+    }
+  }, [logDebug]);
+
+  useEffect(() => {
+    initializeSocket();
+  }, [initializeSocket]);
+
   useEffect(() => {
     const initialize = async () => {
       try {
@@ -185,138 +329,7 @@ const Video = () => {
       }
     };
     initialize();
-
-    socketRef.current = io(SIGNALING_SERVER_URL, {
-      //transports: ['websocket', 'polling'],
-      transports: ['websocket', 'polling'],
-      reconnection: true,
-      reconnectionAttempts: Infinity,
-      reconnectionDelay: 1000,
-      reconnectionDelayMax: 5000,
-      randomizationFactor: 0.5,
-    });
-
-    socketRef.current.on('connect', () => {
-      logDebug('Connected to signaling server');
-      if (inRoom) {
-        socketRef.current.emit(isHost ? 'create-room' : 'join-room', roomId, socketRef.current.id, userName);
-      }
-    });
-    socketRef.current.on('connect_error', (err) => {
-      logDebug(`Socket connection error: ${err.message}`);
-      setTimeout(() => socketRef.current.connect(), 2000);
-    });
-    socketRef.current.on('reconnect', (attempt) => logDebug(`Reconnected after attempt ${attempt}`));
-    socketRef.current.on('reconnect_failed', () => {
-      logDebug('Reconnection failed. Retrying manually...');
-      socketRef.current.connect();
-    });
-
-    socketRef.current.on('room-created', (newRoomId) => {
-  console.log('Room created, newRoomId:', newRoomId);
-  logDebug(`Room created with ID: ${newRoomId}`);
-  setRoomId(newRoomId);
-  setInRoom(true);
-  setIsHost(true);
-});
-    socketRef.current.on('user-joined', (userId, userName) => {
-    logDebug(`User joined: ${userId} (${userName})`);
-    setConnectionStatus((prev) => ({
-      ...prev,
-      [userId]: { status: 'connecting', userName, proctoring: false } // Ensure this is set before peer creation
-    }));
-    const peer = createPeer(userId, true);
-    setPeers((prev) => ({ ...prev, [userId]: peer }));
-  });
-    socketRef.current.on('offer', (data) => {
-      logDebug(`Received offer from ${data.from}`);
-      let peer = peersRef.current[data.from];
-      if (!peer) {
-        peer = createPeer(data.from, false);
-        peersRef.current[data.from] = peer;
-        setPeers((prev) => ({ ...prev, [data.from]: peer }));
-      }
-      peer.signal(data.signal);
-    });
-    socketRef.current.on('answer', (data) => {
-      logDebug(`Received answer from ${data.from}`);
-      const peer = peersRef.current[data.from];
-      if (peer) {
-        peer.signal(data.signal);
-      } else {
-        logDebug(`No peer for ${data.from}, queuing answer...`);
-        if (!pendingCandidates.current[data.from]) {
-          pendingCandidates.current[data.from] = [];
-        }
-        pendingCandidates.current[data.from].push(data.signal);
-      }
-    });
-    socketRef.current.on('ice-candidate', (data) => {
-      logDebug(`Received ICE candidate from ${data.from}`);
-      const peer = peersRef.current[data.from];
-      if (peer) {
-        peer.signal({ candidate: data.candidate });
-      } else {
-        logDebug(`Peer not ready for ICE candidate from ${data.from}, queuing...`);
-        if (!pendingCandidates.current[data.from]) {
-          pendingCandidates.current[data.from] = [];
-        }
-        pendingCandidates.current[data.from].push({ candidate: data.candidate });
-      }
-    });
-    socketRef.current.on('user-left', (userId) => {
-      logDebug(`User left: ${userId}`);
-      setConnectionStatus((prev) => {
-        const newStatus = { ...prev };
-        delete newStatus[userId];
-        return newStatus;
-      });
-      if (peersRef.current[userId]) {
-        peersRef.current[userId].destroy();
-        delete peersRef.current[userId];
-        setPeers((prev) => {
-          const newPeers = { ...prev };
-          delete newPeers[userId];
-          return newPeers;
-        });
-        if (peerVideoRefs.current[userId]) {
-          peerVideoRefs.current[userId].srcObject = null;
-          delete peerVideoRefs.current[userId];
-        }
-      }
-    });
-    socketRef.current.on('chat-message', (data) => {
-      logDebug(`Received chat message from ${data.from} (${data.userName}): ${data.message}`);
-      setMessages((prev) => [
-        ...prev,
-        { from: data.from, userName: data.userName || 'Unknown', message: data.message, time: new Date().toLocaleTimeString() },
-      ]);
-    });
-    socketRef.current.on('toggle-proctoring', (data) => {
-      logDebug(`Received proctoring toggle: ${data.userId} -> ${data.enable}`);
-      if (data.userId === socketRef.current.id) {
-        setProctoringActive(data.enable);
-      }
-    });
-    socketRef.current.on('cheat-detected', (data) => {
-      if (isHost) {
-        logDebug(`Cheat detected from ${data.userId} (${data.userName}): ${data.cheatLog.message}`);
-        setCheatLogs((prev) => [...prev, {
-          ...data.cheatLog,
-          userId: data.userId,
-          userName: data.userName,
-        }]);
-      }
-    });
-
-    return () => {
-      socketRef.current.disconnect();
-      if (faceDetectionIntervalRef.current) clearInterval(faceDetectionIntervalRef.current);
-      if (webcamRef.current?.srcObject) {
-        webcamRef.current.srcObject.getTracks().forEach(track => track.stop());
-      }
-    };
-  }, [inRoom, roomId, userName, logDebug, isHost]);
+  }, [logDebug, triggerAlert]);
 
   useEffect(() => {
     if (!localStream || !inRoom) return;
@@ -443,32 +456,32 @@ const Video = () => {
   };
 
   const createRoom = async () => {
-  if (!userName.trim()) {
-    logDebug('Please enter a username.');
-    alert('Please enter a username.');
-    return;
-  }
+    if (!userName.trim()) {
+      logDebug('Please enter a username.');
+      alert('Please enter a username.');
+      return;
+    }
 
-  if (!(await checkPermissions())) {
-    logDebug('Camera/microphone permissions denied.');
-    alert('Please grant camera and microphone permissions.');
-    return;
-  }
+    if (!(await checkPermissions())) {
+      logDebug('Camera/microphone permissions denied.');
+      alert('Please grant camera and microphone permissions.');
+      return;
+    }
 
-  logDebug(`Creating room as ${userName}`);
-  try {
-    const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-    setLocalStream(stream);
-    setIsVideoOn(true);
-    setIsAudioOn(true);
-    logDebug('Local stream acquired successfully.');
-    socketRef.current.emit('create-room', socketRef.current.id, userName);
-    console.log('createRoom called, waiting for room-created');
-  } catch (err) {
-    logDebug(`Error accessing media: ${err.name} - ${err.message}`);
-    alert('Failed to access camera/microphone.');
-  }
-};
+    logDebug(`Creating room as ${userName}`);
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+      setLocalStream(stream);
+      setIsVideoOn(true);
+      setIsAudioOn(true);
+      logDebug('Local stream acquired successfully.');
+      socketRef.current.emit('create-room', socketRef.current.id, userName);
+      console.log('createRoom called, waiting for room-created');
+    } catch (err) {
+      logDebug(`Error accessing media: ${err.name} - ${err.message}`);
+      alert('Failed to access camera/microphone.');
+    }
+  };
 
   const joinRoom = async () => {
     if (!roomId.trim()) {
@@ -656,10 +669,12 @@ const Video = () => {
       logDebug(`Peer connection established with ${userId}`);
       setConnectionStatus((prev) => ({ ...prev, [userId]: { ...prev[userId], status: 'connected' } }));
     });
+
     peer.on('error', (err) => {
       logDebug(`Peer error (${userId}): ${err.message}`);
       setConnectionStatus((prev) => ({ ...prev, [userId]: { ...prev[userId], status: 'failed' } }));
     });
+
     peer.on('close', () => {
       logDebug(`Peer connection closed for ${userId}`);
       setConnectionStatus((prev) => ({ ...prev, [userId]: { ...prev[userId], status: 'disconnected' } }));
@@ -687,12 +702,10 @@ const Video = () => {
     }
   };
 
-  // const shortId = (id) => id.slice(0, 8);
-
   const shortId = (id) => {
-  if (!id || typeof id !== 'string') return 'unknown';
-  return id.slice(0, 8);
-};
+    if (!id || typeof id !== 'string') return 'unknown';
+    return id.slice(0, 8);
+  };
 
   if (modelsLoading) {
     return (
@@ -801,55 +814,55 @@ const Video = () => {
             )}
             <div className="flex flex-col lg:flex-row gap-5">
               <div className="flex-3 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5">
-  <div className="relative flex flex-col items-center bg-white p-3 rounded-lg shadow-md hover:shadow-lg transition-transform hover:-translate-y-1">
-    <video
-      ref={userVideoRef}
-      autoPlay
-      muted
-      playsInline
-      className="w-full h-60 bg-black rounded-lg object-cover"
-    />
-    <div className="mt-2 font-semibold text-gray-700">
-      You ({userName}) {proctoringActive && faceDetected ? '✅ Face Detected' : proctoringActive ? '❌ Face Not Detected' : ''}
-    </div>
-    <div className="text-sm text-gray-600">Violations: {cheatCount}/{MAX_VIOLATIONS}</div>
-    {warningMessage && <div className="text-sm text-red-600">{warningMessage}</div>}
-  </div>
-  {Object.keys(peers).map((userId) => {
-    const peerStatus = connectionStatus[userId] || { userName: `Peer: ${shortId(userId)}`, status: 'connecting', proctoring: false };
-    return (
-      <div key={userId} className="flex flex-col items-center bg-white p-3 rounded-lg shadow-md hover:shadow-lg transition-transform hover:-translate-y-1">
-        <video
-          ref={(el) => {
-            if (el && !peerVideoRefs.current[userId]) {
-              peerVideoRefs.current[userId] = el;
-              if (peersRef.current[userId]?.remoteStream) {
-                el.srcObject = peersRef.current[userId].remoteStream;
-                el.play().catch((err) => {
-                  logDebug(`Error playing video for ${userId}: ${err.message}`);
-                });
-              }
-            }
-          }}
-          autoPlay
-          playsInline
-          className="w-full h-60 bg-black rounded-lg object-cover"
-        />
-        <div className="mt-2 font-semibold text-gray-700">
-          {peerStatus.userName} ({peerStatus.status})
-        </div>
-        {isHost && (
-          <button
-            onClick={() => toggleProctoring(userId)}
-            className={`mt-2 px-4 py-2 rounded-lg ${peerStatus.proctoring ? 'bg-red-600 hover:bg-red-700' : 'bg-green-600 hover:bg-green-700'} text-white`}
-          >
-            {peerStatus.proctoring ? 'Disable Proctoring' : 'Enable Proctoring'}
-          </button>
-        )}
-      </div>
-    );
-  })}
-</div>
+                <div className="relative flex flex-col items-center bg-white p-3 rounded-lg shadow-md hover:shadow-lg transition-transform hover:-translate-y-1">
+                  <video
+                    ref={userVideoRef}
+                    autoPlay
+                    muted
+                    playsInline
+                    className="w-full h-60 bg-black rounded-lg object-cover"
+                  />
+                  <div className="mt-2 font-semibold text-gray-700">
+                    You ({userName}) {proctoringActive && faceDetected ? '✅ Face Detected' : proctoringActive ? '❌ Face Not Detected' : ''}
+                  </div>
+                  <div className="text-sm text-gray-600">Violations: {cheatCount}/{MAX_VIOLATIONS}</div>
+                  {warningMessage && <div className="text-sm text-red-600">{warningMessage}</div>}
+                </div>
+                {Object.keys(peers).map((userId) => {
+                  const peerStatus = connectionStatus[userId] || { userName: `Peer: ${shortId(userId)}`, status: 'connecting', proctoring: false };
+                  return (
+                    <div key={userId} className="flex flex-col items-center bg-white p-3 rounded-lg shadow-md hover:shadow-lg transition-transform hover:-translate-y-1">
+                      <video
+                        ref={(el) => {
+                          if (el && !peerVideoRefs.current[userId]) {
+                            peerVideoRefs.current[userId] = el;
+                            if (peersRef.current[userId]?.remoteStream) {
+                              el.srcObject = peersRef.current[userId].remoteStream;
+                              el.play().catch((err) => {
+                                logDebug(`Error playing video for ${userId}: ${err.message}`);
+                              });
+                            }
+                          }
+                        }}
+                        autoPlay
+                        playsInline
+                        className="w-full h-60 bg-black rounded-lg object-cover"
+                      />
+                      <div className="mt-2 font-semibold text-gray-700">
+                        {peerStatus.userName} ({peerStatus.status})
+                      </div>
+                      {isHost && (
+                        <button
+                          onClick={() => toggleProctoring(userId)}
+                          className={`mt-2 px-4 py-2 rounded-lg ${peerStatus.proctoring ? 'bg-red-600 hover:bg-red-700' : 'bg-green-600 hover:bg-green-700'} text-white`}
+                        >
+                          {peerStatus.proctoring ? 'Disable Proctoring' : 'Enable Proctoring'}
+                        </button>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
               <div className="flex-1 bg-white p-4 rounded-lg shadow-md max-w-md">
                 <h3 className="text-lg font-semibold mb-3">Live Chat</h3>
                 <div ref={chatRef} className="h-96 overflow-y-auto bg-gray-50 p-3 rounded-lg mb-3">
