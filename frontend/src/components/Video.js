@@ -656,13 +656,9 @@ const Video = () => {
     peer.on('stream', (stream) => {
       logDebug(`Received stream from ${userId}`);
       peersRef.current[userId].remoteStream = stream;
-      if (peerVideoRefs.current[userId]) {
-        peerVideoRefs.current[userId].srcObject = stream;
-        peerVideoRefs.current[userId].play().catch((err) => {
-          logDebug(`Error playing video for ${userId}: ${err.message}`);
-        });
-        setConnectionStatus((prev) => ({ ...prev, [userId]: { ...prev[userId], status: 'connected' } }));
-      }
+      // Ensure the video element is updated even if it mounts later
+      updatePeerVideo(userId, stream);
+      setConnectionStatus((prev) => ({ ...prev, [userId]: { ...prev[userId], status: 'connected' } }));
     });
 
     peer.on('connect', () => {
@@ -678,6 +674,9 @@ const Video = () => {
     peer.on('close', () => {
       logDebug(`Peer connection closed for ${userId}`);
       setConnectionStatus((prev) => ({ ...prev, [userId]: { ...prev[userId], status: 'disconnected' } }));
+      if (peerVideoRefs.current[userId]) {
+        peerVideoRefs.current[userId].srcObject = null;
+      }
     });
 
     peersRef.current[userId] = peer;
@@ -689,6 +688,19 @@ const Video = () => {
     }
 
     return peer;
+  };
+
+  // Helper function to update peer video
+  const updatePeerVideo = (userId, stream) => {
+    if (peerVideoRefs.current[userId]) {
+      peerVideoRefs.current[userId].srcObject = stream;
+      peerVideoRefs.current[userId].play().catch((err) => {
+        logDebug(`Error playing video for ${userId}: ${err.message}`);
+      });
+    } else {
+      // Retry after a short delay if the element isn't ready
+      setTimeout(() => updatePeerVideo(userId, stream), 500);
+    }
   };
 
   const sendChatMessage = () => {
@@ -836,6 +848,7 @@ const Video = () => {
                         ref={(el) => {
                           if (el && !peerVideoRefs.current[userId]) {
                             peerVideoRefs.current[userId] = el;
+                            // Initial stream check
                             if (peersRef.current[userId]?.remoteStream) {
                               el.srcObject = peersRef.current[userId].remoteStream;
                               el.play().catch((err) => {
