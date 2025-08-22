@@ -69,8 +69,8 @@ io.on('connection', (socket) => {
     }
     rooms[roomId].users[socket.id] = { userName };
     socket.join(roomId);
-    socket.to(roomId).emit('user-joined', userId || socket.id, userName);
-    console.log(`${userId || socket.id} (${userName}) joined room ${roomId}`);
+    socket.to(roomId).emit('user-joined', socket.id, userName); // Use socket.id for consistency
+    console.log(`${socket.id} (${userName}) joined room ${roomId}`);
     // Debug: Log room members
     io.in(roomId).allSockets().then(sockets => {
       console.log(`Users in room ${roomId}: ${[...sockets].join(', ')}`);
@@ -107,14 +107,17 @@ io.on('connection', (socket) => {
 
   // WebRTC signaling
   socket.on('offer', (data) => {
+    console.log(`Relaying offer from ${socket.id} to ${data.to}`);
     socket.to(data.to).emit('offer', { signal: data.signal, from: socket.id });
   });
 
   socket.on('answer', (data) => {
+    console.log(`Relaying answer from ${socket.id} to ${data.to}`);
     socket.to(data.to).emit('answer', { signal: data.signal, from: socket.id });
   });
 
   socket.on('ice-candidate', (data) => {
+    console.log(`Relaying ICE candidate from ${socket.id} to ${data.to}`);
     socket.to(data.to).emit('ice-candidate', { candidate: data.candidate, from: socket.id });
   });
 

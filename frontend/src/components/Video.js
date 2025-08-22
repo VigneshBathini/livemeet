@@ -186,12 +186,21 @@ const Video = () => {
           ...prev,
           [userId]: { status: 'connecting', userName, proctoring: false }
         }));
-        const peer = createPeer(userId, true);
-        setPeers((prev) => ({ ...prev, [userId]: peer }));
+        if (localStream) {
+          const peer = createPeer(userId, true);
+          setPeers((prev) => ({ ...prev, [userId]: peer }));
+        } else {
+          logDebug('Local stream not available when user joined');
+        }
       });
 
       socketRef.current.on('offer', (data) => {
         logDebug(`Received offer from ${data.from}`);
+        if (!localStream) {
+          logDebug('Local stream not ready, deferring peer creation');
+          setTimeout(() => socketRef.current.emit('offer', data), 1000); // Retry offer
+          return;
+        }
         let peer = peersRef.current[data.from];
         if (!peer) {
           peer = createPeer(data.from, false);
@@ -618,6 +627,12 @@ const Video = () => {
 
   const createPeer = (userId, initiator) => {
     logDebug(`Creating peer for ${userId}, initiator: ${initiator}`);
+    if (!localStream) {
+      logDebug(`Local stream unavailable for ${userId}, retrying...`);
+      setTimeout(() => createPeer(userId, initiator), 1000); // Retry if stream is not ready
+      return null;
+    }
+
     const peer = new SimplePeer({
       initiator,
       trickle: true,
@@ -644,10 +659,13 @@ const Video = () => {
     peer.on('signal', (signal) => {
       setTimeout(() => {
         if (signal.type === 'offer') {
+          logDebug(`Sending offer to ${userId}`);
           socketRef.current.emit('offer', { signal, to: userId });
         } else if (signal.type === 'answer') {
+          logDebug(`Sending answer to ${userId}`);
           socketRef.current.emit('answer', { signal, to: userId });
         } else if (signal.candidate) {
+          logDebug(`Sending ICE candidate to ${userId}`);
           socketRef.current.emit('ice-candidate', { candidate: signal.candidate, to: userId });
         }
       }, 100);
@@ -655,8 +673,8 @@ const Video = () => {
 
     peer.on('stream', (stream) => {
       logDebug(`Received stream from ${userId}`);
+      peersRef.current[userId] = peersRef.current[userId] || {};
       peersRef.current[userId].remoteStream = stream;
-      // Ensure the video element is updated even if it mounts later
       updatePeerVideo(userId, stream);
       setConnectionStatus((prev) => ({ ...prev, [userId]: { ...prev[userId], status: 'connected' } }));
     });
@@ -690,7 +708,6 @@ const Video = () => {
     return peer;
   };
 
-  // Helper function to update peer video
   const updatePeerVideo = (userId, stream) => {
     if (peerVideoRefs.current[userId]) {
       peerVideoRefs.current[userId].srcObject = stream;
@@ -848,7 +865,6 @@ const Video = () => {
                         ref={(el) => {
                           if (el && !peerVideoRefs.current[userId]) {
                             peerVideoRefs.current[userId] = el;
-                            // Initial stream check
                             if (peersRef.current[userId]?.remoteStream) {
                               el.srcObject = peersRef.current[userId].remoteStream;
                               el.play().catch((err) => {
