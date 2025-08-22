@@ -3,7 +3,7 @@ const http = require('http');
 const { Server } = require('socket.io');
 const cors = require('cors');
 const path = require('path');
-const { v4: uuidv4 } = require('uuid');
+const { v4: uuidv4 } = require('uuid'); // Added for generating unique room IDs
 
 const app = express();
 const server = http.createServer(app);
@@ -30,7 +30,7 @@ const io = new Server(server, {
   pingInterval: 25000
 });
 
-// Store room data: { roomId: { hostId: string, users: { [socketId]: { userName: string, clientId: string } } } }
+// Store room data: { roomId: { hostId: string, users: { [socketId]: { userName: string } } } }
 const rooms = {};
 
 // Test endpoint
@@ -46,14 +46,15 @@ io.on('connection', (socket) => {
 
   // Handle room creation
   socket.on('create-room', (userId, userName) => {
-    const roomId = uuidv4();
+    const roomId = uuidv4(); // Generate unique room ID
     rooms[roomId] = {
       hostId: socket.id,
-      users: { [socket.id]: { userName, clientId: userId } }
+      users: { [socket.id]: { userName } }
     };
     socket.join(roomId);
     socket.emit('room-created', roomId);
-    console.log(`Room ${roomId} created by ${socket.id} (${userName}), clientId: ${userId}`);
+    console.log(`Room ${roomId} created by ${socket.id} (${userName})`);
+    // Debug: Log room members
     io.in(roomId).allSockets().then(sockets => {
       console.log(`Users in room ${roomId}: ${[...sockets].join(', ')}`);
     });
@@ -66,10 +67,11 @@ io.on('connection', (socket) => {
       console.log(`User ${socket.id} attempted to join non-existent room ${roomId}`);
       return;
     }
-    rooms[roomId].users[socket.id] = { userName, clientId: userId };
+    rooms[roomId].users[socket.id] = { userName };
     socket.join(roomId);
-    socket.to(roomId).emit('user-joined', socket.id, userName); // Use socket.id instead of userId
-    console.log(`${socket.id} (${userName}), clientId: ${userId} joined room ${roomId}`);
+    socket.to(roomId).emit('user-joined', userId || socket.id, userName);
+    console.log(`${userId || socket.id} (${userName}) joined room ${roomId}`);
+    // Debug: Log room members
     io.in(roomId).allSockets().then(sockets => {
       console.log(`Users in room ${roomId}: ${[...sockets].join(', ')}`);
     });
@@ -105,33 +107,15 @@ io.on('connection', (socket) => {
 
   // WebRTC signaling
   socket.on('offer', (data) => {
-    console.log(`Relaying offer from ${socket.id} to ${data.to}`);
-    const targetSocket = io.sockets.sockets.get(data.to);
-    if (targetSocket) {
-      targetSocket.emit('offer', { signal: data.signal, from: socket.id });
-    } else {
-      console.log(`Target socket ${data.to} not found for offer`);
-    }
+    socket.to(data.to).emit('offer', { signal: data.signal, from: socket.id });
   });
 
   socket.on('answer', (data) => {
-    console.log(`Relaying answer from ${socket.id} to ${data.to}`);
-    const targetSocket = io.sockets.sockets.get(data.to);
-    if (targetSocket) {
-      targetSocket.emit('answer', { signal: data.signal, from: socket.id });
-    } else {
-      console.log(`Target socket ${data.to} not found for answer`);
-    }
+    socket.to(data.to).emit('answer', { signal: data.signal, from: socket.id });
   });
 
   socket.on('ice-candidate', (data) => {
-    console.log(`Relaying ICE candidate from ${socket.id} to ${data.to}`);
-    const targetSocket = io.sockets.sockets.get(data.to);
-    if (targetSocket) {
-      targetSocket.emit('ice-candidate', { candidate: data.candidate, from: socket.id });
-    } else {
-      console.log(`Target socket ${data.to} not found for ICE candidate`);
-    }
+    socket.to(data.to).emit('ice-candidate', { candidate: data.candidate, from: socket.id });
   });
 
   // Handle chat messages
@@ -153,11 +137,13 @@ io.on('connection', (socket) => {
         delete rooms[roomId].users[socket.id];
         socket.to(roomId).emit('user-left', socket.id);
         console.log(`User ${socket.id} left room ${roomId}`);
+        // If host disconnects, clear the room
         if (wasHost) {
           socket.to(roomId).emit('room-closed');
           delete rooms[roomId];
           console.log(`Room ${roomId} closed as host ${socket.id} disconnected`);
         }
+        // Debug: Log remaining room members
         io.in(roomId).allSockets().then(sockets => {
           console.log(`Users in room ${roomId}: ${[...sockets].join(', ')}`);
         });
