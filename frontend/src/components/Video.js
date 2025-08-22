@@ -220,11 +220,14 @@ const Video = () => {
   setIsHost(true);
 });
     socketRef.current.on('user-joined', (userId, userName) => {
-      logDebug(`User joined: ${userId} (${userName})`);
-      setConnectionStatus((prev) => ({ ...prev, [userId]: { status: 'connecting', userName, proctoring: false } }));
-      const peer = createPeer(userId, true);
-      setPeers((prev) => ({ ...prev, [userId]: peer }));
-    });
+    logDebug(`User joined: ${userId} (${userName})`);
+    setConnectionStatus((prev) => ({
+      ...prev,
+      [userId]: { status: 'connecting', userName, proctoring: false } // Ensure this is set before peer creation
+    }));
+    const peer = createPeer(userId, true);
+    setPeers((prev) => ({ ...prev, [userId]: peer }));
+  });
     socketRef.current.on('offer', (data) => {
       logDebug(`Received offer from ${data.from}`);
       let peer = peersRef.current[data.from];
@@ -684,7 +687,12 @@ const Video = () => {
     }
   };
 
-  const shortId = (id) => id.slice(0, 8);
+  // const shortId = (id) => id.slice(0, 8);
+
+  const shortId = (id) => {
+  if (!id || typeof id !== 'string') return 'unknown';
+  return id.slice(0, 8);
+};
 
   if (modelsLoading) {
     return (
@@ -793,52 +801,55 @@ const Video = () => {
             )}
             <div className="flex flex-col lg:flex-row gap-5">
               <div className="flex-3 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5">
-                <div className="relative flex flex-col items-center bg-white p-3 rounded-lg shadow-md hover:shadow-lg transition-transform hover:-translate-y-1">
-                  <video
-                    ref={userVideoRef}
-                    autoPlay
-                    muted
-                    playsInline
-                    className="w-full h-60 bg-black rounded-lg object-cover"
-                  />
-                  <div className="mt-2 font-semibold text-gray-700">
-                    You ({userName}) {proctoringActive && faceDetected ? '✅ Face Detected' : proctoringActive ? '❌ Face Not Detected' : ''}
-                  </div>
-                  <div className="text-sm text-gray-600">Violations: {cheatCount}/{MAX_VIOLATIONS}</div>
-                  {warningMessage && <div className="text-sm text-red-600">{warningMessage}</div>}
-                </div>
-                {Object.keys(peers).map((userId) => (
-                  <div key={userId} className="flex flex-col items-center bg-white p-3 rounded-lg shadow-md hover:shadow-lg transition-transform hover:-translate-y-1">
-                    <video
-                      ref={(el) => {
-                        if (el && !peerVideoRefs.current[userId]) {
-                          peerVideoRefs.current[userId] = el;
-                          if (peersRef.current[userId]?.remoteStream) {
-                            el.srcObject = peersRef.current[userId].remoteStream;
-                            el.play().catch((err) => {
-                              logDebug(`Error playing video for ${userId}: ${err.message}`);
-                            });
-                          }
-                        }
-                      }}
-                      autoPlay
-                      playsInline
-                      className="w-full h-60 bg-black rounded-lg object-cover"
-                    />
-                    <div className="mt-2 font-semibold text-gray-700">
-                      {connectionStatus[userId]?.userName || `Peer: ${shortId(userId)}`} ({connectionStatus[userId]?.status || 'connecting'})
-                    </div>
-                    {isHost && (
-                      <button
-                        onClick={() => toggleProctoring(userId)}
-                        className={`mt-2 px-4 py-2 rounded-lg ${connectionStatus[userId]?.proctoring ? 'bg-red-600 hover:bg-red-700' : 'bg-green-600 hover:bg-green-700'} text-white`}
-                      >
-                        {connectionStatus[userId]?.proctoring ? 'Disable Proctoring' : 'Enable Proctoring'}
-                      </button>
-                    )}
-                  </div>
-                ))}
-              </div>
+  <div className="relative flex flex-col items-center bg-white p-3 rounded-lg shadow-md hover:shadow-lg transition-transform hover:-translate-y-1">
+    <video
+      ref={userVideoRef}
+      autoPlay
+      muted
+      playsInline
+      className="w-full h-60 bg-black rounded-lg object-cover"
+    />
+    <div className="mt-2 font-semibold text-gray-700">
+      You ({userName}) {proctoringActive && faceDetected ? '✅ Face Detected' : proctoringActive ? '❌ Face Not Detected' : ''}
+    </div>
+    <div className="text-sm text-gray-600">Violations: {cheatCount}/{MAX_VIOLATIONS}</div>
+    {warningMessage && <div className="text-sm text-red-600">{warningMessage}</div>}
+  </div>
+  {Object.keys(peers).map((userId) => {
+    const peerStatus = connectionStatus[userId] || { userName: `Peer: ${shortId(userId)}`, status: 'connecting', proctoring: false };
+    return (
+      <div key={userId} className="flex flex-col items-center bg-white p-3 rounded-lg shadow-md hover:shadow-lg transition-transform hover:-translate-y-1">
+        <video
+          ref={(el) => {
+            if (el && !peerVideoRefs.current[userId]) {
+              peerVideoRefs.current[userId] = el;
+              if (peersRef.current[userId]?.remoteStream) {
+                el.srcObject = peersRef.current[userId].remoteStream;
+                el.play().catch((err) => {
+                  logDebug(`Error playing video for ${userId}: ${err.message}`);
+                });
+              }
+            }
+          }}
+          autoPlay
+          playsInline
+          className="w-full h-60 bg-black rounded-lg object-cover"
+        />
+        <div className="mt-2 font-semibold text-gray-700">
+          {peerStatus.userName} ({peerStatus.status})
+        </div>
+        {isHost && (
+          <button
+            onClick={() => toggleProctoring(userId)}
+            className={`mt-2 px-4 py-2 rounded-lg ${peerStatus.proctoring ? 'bg-red-600 hover:bg-red-700' : 'bg-green-600 hover:bg-green-700'} text-white`}
+          >
+            {peerStatus.proctoring ? 'Disable Proctoring' : 'Enable Proctoring'}
+          </button>
+        )}
+      </div>
+    );
+  })}
+</div>
               <div className="flex-1 bg-white p-4 rounded-lg shadow-md max-w-md">
                 <h3 className="text-lg font-semibold mb-3">Live Chat</h3>
                 <div ref={chatRef} className="h-96 overflow-y-auto bg-gray-50 p-3 rounded-lg mb-3">
