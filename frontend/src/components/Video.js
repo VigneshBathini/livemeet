@@ -188,26 +188,40 @@ const Video = () => {
         }));
         if (localStream) {
           const peer = createPeer(userId, true);
-          setPeers((prev) => ({ ...prev, [userId]: peer }));
+          if (peer) setPeers((prev) => ({ ...prev, [userId]: peer }));
         } else {
-          logDebug('Local stream not available when user joined');
+          logDebug('Local stream not available when user joined, delaying peer creation');
         }
       });
 
       socketRef.current.on('offer', (data) => {
         logDebug(`Received offer from ${data.from}`);
         if (!localStream) {
-          logDebug('Local stream not ready, deferring peer creation');
-          setTimeout(() => socketRef.current.emit('offer', data), 1000); // Retry offer
+          logDebug('Local stream not ready, acquiring stream and creating peer');
+          navigator.mediaDevices.getUserMedia({ video: true, audio: true })
+            .then((stream) => {
+              setLocalStream(stream);
+              setIsVideoOn(true);
+              setIsAudioOn(true);
+              const peer = createPeer(data.from, false);
+              if (peer) {
+                peer.signal(data.signal);
+                setPeers((prev) => ({ ...prev, [data.from]: peer }));
+              }
+            })
+            .catch((err) => logDebug(`Error acquiring stream for offer: ${err.message}`));
           return;
         }
         let peer = peersRef.current[data.from];
         if (!peer) {
           peer = createPeer(data.from, false);
-          peersRef.current[data.from] = peer;
-          setPeers((prev) => ({ ...prev, [data.from]: peer }));
+          if (peer) {
+            peer.signal(data.signal);
+            setPeers((prev) => ({ ...prev, [data.from]: peer }));
+          }
+        } else {
+          peer.signal(data.signal);
         }
-        peer.signal(data.signal);
       });
 
       socketRef.current.on('answer', (data) => {
@@ -629,7 +643,7 @@ const Video = () => {
     logDebug(`Creating peer for ${userId}, initiator: ${initiator}`);
     if (!localStream) {
       logDebug(`Local stream unavailable for ${userId}, retrying...`);
-      setTimeout(() => createPeer(userId, initiator), 1000); // Retry if stream is not ready
+      setTimeout(() => createPeer(userId, initiator), 1000);
       return null;
     }
 
@@ -715,8 +729,18 @@ const Video = () => {
         logDebug(`Error playing video for ${userId}: ${err.message}`);
       });
     } else {
-      // Retry after a short delay if the element isn't ready
-      setTimeout(() => updatePeerVideo(userId, stream), 500);
+      // Create a new video element if not present
+      const videoElement = document.createElement('video');
+      videoElement.autoPlay = true;
+      videoElement.playsInline = true;
+      videoElement.className = 'w-full h-60 bg-black rounded-lg object-cover';
+      peerVideoRefs.current[userId] = videoElement;
+      videoElement.srcObject = stream;
+      videoElement.play().catch((err) => {
+        logDebug(`Error playing video for ${userId} on new element: ${err.message}`);
+      });
+      // Force re-render or append to DOM (you may need to adjust this based on your render logic)
+      setPeers((prev) => ({ ...prev })); // Trigger re-render
     }
   };
 
@@ -863,13 +887,15 @@ const Video = () => {
                     <div key={userId} className="flex flex-col items-center bg-white p-3 rounded-lg shadow-md hover:shadow-lg transition-transform hover:-translate-y-1">
                       <video
                         ref={(el) => {
-                          if (el && !peerVideoRefs.current[userId]) {
+                          if (el) {
                             peerVideoRefs.current[userId] = el;
                             if (peersRef.current[userId]?.remoteStream) {
                               el.srcObject = peersRef.current[userId].remoteStream;
                               el.play().catch((err) => {
                                 logDebug(`Error playing video for ${userId}: ${err.message}`);
                               });
+                            } else {
+                              el.srcObject = null; // Clear if no remote stream
                             }
                           }
                         }}
