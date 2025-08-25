@@ -3,7 +3,9 @@ import io from 'socket.io-client';
 import SimplePeer from 'simple-peer';
 import * as faceapi from 'face-api.js';
 
-const SIGNALING_SERVER_URL = 'https://livemeet-ribm.onrender.com';
+const SIGNALING_SERVER_URL = process.env.NODE_ENV === 'production'
+  ? 'https://livemeet-ribm.onrender.com'
+  : 'http://localhost:3000';
 
 class ErrorBoundary extends React.Component {
   state = { hasError: false };
@@ -51,6 +53,8 @@ const Video = () => {
   const [lastFacePosition, setLastFacePosition] = useState(null);
   const [multipleFacesCount, setMultipleFacesCount] = useState(0);
   const [proctoredUsers, setProctoredUsers] = useState({});
+  const [socketConnected, setSocketConnected] = useState(false);
+  const [cameraTestActive, setCameraTestActive] = useState(false);
 
   const socketRef = useRef();
   const userVideoRef = useRef();
@@ -61,6 +65,7 @@ const Video = () => {
   const chatRef = useRef();
   const faceDetectionIntervalRef = useRef();
   const lastAlertTime = useRef({});
+  const streamTimeoutRef = useRef({});
 
   const APP_SWITCH_THRESHOLD = 2000;
   const ALERT_DEBOUNCE_MS = 15000;
@@ -68,10 +73,11 @@ const Video = () => {
   const MAX_VIOLATIONS = 3;
   const MOVEMENT_THRESHOLD = 50;
   const MULTIPLE_FACES_CONFIRMATION_FRAMES = 3;
+  const STREAM_TIMEOUT_MS = 10000;
 
   const logDebug = useCallback((msg) => {
-    console.log(msg);
-    setDebugLog((prev) => [...prev, msg].slice(-50));
+    console.log(`[${new Date().toLocaleTimeString()}] ${msg}`);
+    setDebugLog((prev) => [...prev, `[${new Date().toLocaleTimeString()}] ${msg}`].slice(-50));
   }, []);
 
   const triggerAlert = useCallback((message, violationType) => {
@@ -84,7 +90,7 @@ const Video = () => {
       return;
     }
 
-    logDebug(`Triggering alert: ${message} (${violationType}) at ${new Date(now).toLocaleTimeString()}`);
+    logDebug(`Triggering alert: ${message} (${violationType})`);
     setAlertQueue((prev) => [...prev, { message, violationType, timestamp: now }]);
     setAlertLogs((prev) => [
       ...prev,
@@ -146,173 +152,149 @@ const Video = () => {
     }
   }, [alertQueue, currentAlert]);
 
-  const initializeSocket = useCallback(() => {
-    if (!socketRef.current) {
-      socketRef.current = io(SIGNALING_SERVER_URL, {
-        transports: ['websocket', 'polling'],
-        reconnection: true,
-        reconnectionAttempts: Infinity,
-        reconnectionDelay: 1000,
-        reconnectionDelayMax: 5000,
-        randomizationFactor: 0.5,
-      });
-
-      socketRef.current.on('connect', () => {
-        logDebug('Connected to signaling server');
-      });
-
-      socketRef.current.on('connect_error', (err) => {
-        logDebug(`Socket connection error: ${err.message}`);
-        setTimeout(() => socketRef.current.connect(), 2000);
-      });
-
-      socketRef.current.on('reconnect', (attempt) => logDebug(`Reconnected after attempt ${attempt}`));
-      socketRef.current.on('reconnect_failed', () => {
-        logDebug('Reconnection failed. Retrying manually...');
-        socketRef.current.connect();
-      });
-
-      socketRef.current.on('room-created', (newRoomId) => {
-        logDebug(`Room created with ID: ${newRoomId}`);
-        setRoomId(newRoomId);
-        setInRoom(true);
-        setIsHost(true);
-      });
-
-      socketRef.current.on('user-joined', (userId, userName) => {
-        logDebug(`User joined: ${userId} (${userName})`);
-        setConnectionStatus((prev) => ({
-          ...prev,
-          [userId]: { status: 'connecting', userName, proctoring: false }
-        }));
-        if (localStream) {
-          const peer = createPeer(userId, true);
-          if (peer) setPeers((prev) => ({ ...prev, [userId]: peer }));
-        } else {
-          logDebug('Local stream not available when user joined, delaying peer creation until stream is ready');
-        }
-      });
-
-      socketRef.current.on('offer', (data) => {
-        logDebug(`Received offer from ${data.from}`);
-        if (!localStream) {
-          logDebug('Local stream not ready, acquiring stream and creating peer');
-          navigator.mediaDevices.getUserMedia({ video: true, audio: true })
-            .then((stream) => {
-              setLocalStream(stream);
-              setIsVideoOn(true);
-              setIsAudioOn(true);
-              assignStreamToVideoElements(stream);
-              const peer = createPeer(data.from, false);
-              if (peer) {
-                peer.signal(data.signal);
-                setPeers((prev) => ({ ...prev, [data.from]: peer }));
-              }
-            })
-            .catch((err) => logDebug(`Error acquiring stream for offer: ${err.message}`));
-          return;
-        }
-        let peer = peersRef.current[data.from];
-        if (!peer) {
-          peer = createPeer(data.from, false);
-          if (peer) {
-            peer.signal(data.signal);
-            setPeers((prev) => ({ ...prev, [data.from]: peer }));
-          }
-        } else {
-          peer.signal(data.signal);
-        }
-      });
-
-      socketRef.current.on('answer', (data) => {
-        logDebug(`Received answer from ${data.from}`);
-        const peer = peersRef.current[data.from];
-        if (peer) {
-          peer.signal(data.signal);
-        } else {
-          logDebug(`No peer for ${data.from}, queuing answer...`);
-          if (!pendingCandidates.current[data.from]) {
-            pendingCandidates.current[data.from] = [];
-          }
-          pendingCandidates.current[data.from].push(data.signal);
-        }
-      });
-
-      socketRef.current.on('ice-candidate', (data) => {
-        logDebug(`Received ICE candidate from ${data.from}`);
-        const peer = peersRef.current[data.from];
-        if (peer) {
-          peer.signal({ candidate: data.candidate });
-        } else {
-          logDebug(`Peer not ready for ICE candidate from ${data.from}, queuing...`);
-          if (!pendingCandidates.current[data.from]) {
-            pendingCandidates.current[data.from] = [];
-          }
-          pendingCandidates.current[data.from].push({ candidate: data.candidate });
-        }
-      });
-
-      socketRef.current.on('user-left', (userId) => {
-        logDebug(`User left: ${userId}`);
-        setConnectionStatus((prev) => {
-          const newStatus = { ...prev };
-          delete newStatus[userId];
-          return newStatus;
-        });
-        if (peersRef.current[userId]) {
-          peersRef.current[userId].destroy();
-          delete peersRef.current[userId];
-          setPeers((prev) => {
-            const newPeers = { ...prev };
-            delete newPeers[userId];
-            return newPeers;
-          });
-          if (peerVideoRefs.current[userId]) {
-            peerVideoRefs.current[userId].srcObject = null;
-            delete peerVideoRefs.current[userId];
-          }
-        }
-      });
-
-      socketRef.current.on('chat-message', (data) => {
-        logDebug(`Received chat message from ${data.from} (${data.userName}): ${data.message}`);
-        setMessages((prev) => [
-          ...prev,
-          { from: data.from, userName: data.userName || 'Unknown', message: data.message, time: new Date().toLocaleTimeString() },
-        ]);
-      });
-
-      socketRef.current.on('toggle-proctoring', (data) => {
-        logDebug(`Received proctoring toggle: ${data.userId} -> ${data.enable}`);
-        if (data.userId === socketRef.current.id) {
-          setProctoringActive(data.enable);
-        }
-      });
-
-      socketRef.current.on('cheat-detected', (data) => {
-        if (isHost) {
-          logDebug(`Cheat detected from ${data.userId} (${data.userName}): ${data.cheatLog.message}`);
-          setCheatLogs((prev) => [...prev, {
-            ...data.cheatLog,
-            userId: data.userId,
-            userName: data.userName,
-          }]);
-        }
-      });
-
-      return () => {
-        socketRef.current.disconnect();
-        if (faceDetectionIntervalRef.current) clearInterval(faceDetectionIntervalRef.current);
-        if (webcamRef.current?.srcObject) {
-          webcamRef.current.srcObject.getTracks().forEach(track => track.stop());
-        }
-      };
-    }
-  }, [logDebug]);
-
   useEffect(() => {
-    initializeSocket();
-  }, [initializeSocket]);
+    socketRef.current = io(SIGNALING_SERVER_URL, {
+      transports: ['websocket', 'polling'],
+      reconnection: true,
+      reconnectionAttempts: Infinity,
+      reconnectionDelay: 1000,
+      reconnectionDelayMax: 5000,
+      randomizationFactor: 0.5,
+    });
+
+    socketRef.current.on('connect', () => {
+      logDebug('Connected to signaling server');
+      setSocketConnected(true);
+    });
+
+    socketRef.current.on('connect_error', (err) => {
+      logDebug(`Socket connection error: ${err.message}`);
+      setSocketConnected(false);
+      setTimeout(() => socketRef.current.connect(), 2000);
+    });
+
+    socketRef.current.on('reconnect', (attempt) => {
+      logDebug(`Reconnected after attempt ${attempt}`);
+      setSocketConnected(true);
+    });
+
+    socketRef.current.on('reconnect_failed', () => {
+      logDebug('Reconnection failed. Retrying manually...');
+      socketRef.current.connect();
+    });
+
+    socketRef.current.on('room-created', (newRoomId) => {
+      logDebug(`Room created with ID: ${newRoomId}`);
+      setRoomId(newRoomId);
+      setInRoom(true);
+      setIsHost(true);
+    });
+
+    socketRef.current.on('user-joined', (userId, userName) => {
+      logDebug(`User joined: ${userId} (${userName})`);
+      setConnectionStatus((prev) => ({
+        ...prev,
+        [userId]: { status: 'connecting', userName, proctoring: false }
+      }));
+      const peer = createPeer(userId, true);
+      setPeers((prev) => ({ ...prev, [userId]: peer }));
+    });
+
+    socketRef.current.on('offer', (data) => {
+      logDebug(`Received offer from ${data.from}`);
+      let peer = peersRef.current[data.from];
+      if (!peer) {
+        peer = createPeer(data.from, false);
+        peersRef.current[data.from] = peer;
+        setPeers((prev) => ({ ...prev, [data.from]: peer }));
+      }
+      peer.signal(data.signal);
+    });
+
+    socketRef.current.on('answer', (data) => {
+      logDebug(`Received answer from ${data.from}`);
+      const peer = peersRef.current[data.from];
+      if (peer) {
+        peer.signal(data.signal);
+      } else {
+        logDebug(`No peer for ${data.from}, queuing answer...`);
+        if (!pendingCandidates.current[data.from]) {
+          pendingCandidates.current[data.from] = [];
+        }
+        pendingCandidates.current[data.from].push(data.signal);
+      }
+    });
+
+    socketRef.current.on('ice-candidate', (data) => {
+      logDebug(`Received ICE candidate from ${data.from}`);
+      const peer = peersRef.current[data.from];
+      if (peer) {
+        peer.signal({ candidate: data.candidate });
+      } else {
+        logDebug(`Peer not ready for ICE candidate from ${data.from}, queuing...`);
+        if (!pendingCandidates.current[data.from]) {
+          pendingCandidates.current[data.from] = [];
+        }
+        pendingCandidates.current[data.from].push({ candidate: data.candidate });
+      }
+    });
+
+    socketRef.current.on('user-left', (userId) => {
+      logDebug(`User left: ${userId}`);
+      setConnectionStatus((prev) => {
+        const newStatus = { ...prev };
+        delete newStatus[userId];
+        return newStatus;
+      });
+      if (peersRef.current[userId]) {
+        clearTimeout(streamTimeoutRef.current[userId]);
+        peersRef.current[userId].destroy();
+        delete peersRef.current[userId];
+        setPeers((prev) => {
+          const newPeers = { ...prev };
+          delete newPeers[userId];
+          return newPeers;
+        });
+        if (peerVideoRefs.current[userId]) {
+          peerVideoRefs.current[userId].srcObject = null;
+          delete peerVideoRefs.current[userId];
+        }
+      }
+    });
+
+    socketRef.current.on('chat-message', (data) => {
+      logDebug(`Received chat message from ${data.from} (${data.userName}): ${data.message}`);
+      setMessages((prev) => [
+        ...prev,
+        { from: data.from, userName: data.userName || 'Unknown', message: data.message, time: new Date().toLocaleTimeString() },
+      ]);
+    });
+
+    socketRef.current.on('toggle-proctoring', (data) => {
+      logDebug(`Received proctoring toggle: ${data.userId} -> ${data.enable}`);
+      if (data.userId === socketRef.current.id) {
+        setProctoringActive(data.enable);
+      }
+    });
+
+    socketRef.current.on('cheat-detected', (data) => {
+      if (isHost) {
+        logDebug(`Cheat detected from ${data.userId} (${data.userName}): ${data.cheatLog.message}`);
+        setCheatLogs((prev) => [...prev, {
+          ...data.cheatLog,
+          userId: data.userId,
+          userName: data.userName,
+        }]);
+      }
+    });
+
+    return () => {
+      socketRef.current.disconnect();
+      if (faceDetectionIntervalRef.current) clearInterval(faceDetectionIntervalRef.current);
+      Object.values(streamTimeoutRef.current).forEach(clearTimeout);
+      if (localStream) localStream.getTracks().forEach(track => track.stop());
+    };
+  }, [logDebug]);
 
   useEffect(() => {
     const initialize = async () => {
@@ -369,31 +351,16 @@ const Video = () => {
         });
         logDebug('Local stream assigned to video elements.');
         setVideoReady(true);
-      } else if (attempt <= 10) {
-        logDebug(`Retrying local stream assignment (${attempt}/10)...`);
+      } else if (attempt <= 15) {
+        logDebug(`Retrying local stream assignment (${attempt}/15)...`);
         setTimeout(() => assignStream(attempt + 1), 1000);
       } else {
-        logDebug('Failed to assign local stream after 10 attempts');
+        logDebug('Failed to assign local stream after 15 attempts');
         setWarningMessage('Failed to initialize video stream.');
       }
     };
     assignStream();
   }, [localStream, inRoom, logDebug]);
-
-  const assignStreamToVideoElements = (stream) => {
-    if (userVideoRef.current && webcamRef.current) {
-      userVideoRef.current.srcObject = stream;
-      webcamRef.current.srcObject = stream;
-      userVideoRef.current.play().catch((err) => {
-        logDebug(`Error playing local video: ${err.message}`);
-      });
-      webcamRef.current.play().catch((err) => {
-        logDebug(`Error playing webcam video: ${err.message}`);
-      });
-      logDebug('Local stream assigned to video elements.');
-      setVideoReady(true);
-    }
-  };
 
   useEffect(() => {
     if (chatRef.current) {
@@ -423,7 +390,7 @@ const Video = () => {
 
       const video = webcamRef.current;
       if (video.readyState !== 4) {
-        logDebug('Video not ready:', video.readyState);
+        logDebug('Video not ready: readyState=' + video.readyState);
         return;
       }
 
@@ -485,7 +452,15 @@ const Video = () => {
   const checkPermissions = async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+      const videoTracks = stream.getVideoTracks();
+      const audioTracks = stream.getAudioTracks();
+      logDebug(`Permission check: video tracks=${videoTracks.length}, audio tracks=${audioTracks.length}`);
+      if (!videoTracks.length) {
+        setWarningMessage('No video track available. Please check your camera.');
+        return false;
+      }
       stream.getTracks().forEach(track => track.stop());
+      logDebug('Media permissions granted');
       return true;
     } catch (err) {
       logDebug(`Permission check failed: ${err.name} - ${err.message}`);
@@ -493,10 +468,41 @@ const Video = () => {
     }
   };
 
+  const testCamera = async () => {
+    setCameraTestActive(true);
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+      if (userVideoRef.current) {
+        userVideoRef.current.srcObject = stream;
+        userVideoRef.current.play().catch((err) => {
+          logDebug(`Error playing test video: ${err.message}`);
+          setWarningMessage('Failed to play camera test video.');
+        });
+      }
+      logDebug(`Camera test: video tracks=${stream.getVideoTracks().length}`);
+      setTimeout(() => {
+        stream.getTracks().forEach(track => track.stop());
+        if (userVideoRef.current) userVideoRef.current.srcObject = localStream;
+        setCameraTestActive(false);
+        logDebug('Camera test ended');
+      }, 5000);
+    } catch (err) {
+      logDebug(`Camera test failed: ${err.message}`);
+      setWarningMessage('Camera test failed. Please check your camera and permissions.');
+      setCameraTestActive(false);
+    }
+  };
+
   const createRoom = async () => {
     if (!userName.trim()) {
       logDebug('Please enter a username.');
       alert('Please enter a username.');
+      return;
+    }
+
+    if (!socketConnected) {
+      logDebug('Not connected to server.');
+      alert('Not connected to server. Please check your network and try again.');
       return;
     }
 
@@ -508,16 +514,27 @@ const Video = () => {
 
     logDebug(`Creating room as ${userName}`);
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { width: { ideal: 1280 }, height: { ideal: 720 } },
+        audio: true,
+      });
+      const videoTracks = stream.getVideoTracks();
+      if (!videoTracks.length) {
+        logDebug('No video track in local stream');
+        setWarningMessage('No video track available. Please check your camera.');
+        stream.getTracks().forEach(track => track.stop());
+        return;
+      }
       setLocalStream(stream);
       setIsVideoOn(true);
       setIsAudioOn(true);
-      assignStreamToVideoElements(stream); // Assign stream before proceeding
+      logDebug('Local stream acquired successfully.');
+      logDebug(`Local stream tracks: video=${stream.getVideoTracks().length}, audio=${stream.getAudioTracks().length}`);
       socketRef.current.emit('create-room', socketRef.current.id, userName);
-      logDebug('Local stream acquired and room creation emitted.');
+      logDebug('create-room event emitted, waiting for room-created');
     } catch (err) {
       logDebug(`Error accessing media: ${err.name} - ${err.message}`);
-      alert('Failed to access camera/microphone.');
+      alert(`Failed to access camera/microphone: ${err.message}`);
     }
   };
 
@@ -533,6 +550,12 @@ const Video = () => {
       return;
     }
 
+    if (!socketConnected) {
+      logDebug('Not connected to server.');
+      alert('Not connected to server. Please check your network and try again.');
+      return;
+    }
+
     if (!(await checkPermissions())) {
       logDebug('Camera/microphone permissions denied.');
       alert('Please grant camera and microphone permissions.');
@@ -541,16 +564,27 @@ const Video = () => {
 
     logDebug(`Joining room: ${roomId} as ${userName}`);
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { width: { ideal: 1280 }, height: { ideal: 720 } },
+        audio: true,
+      });
+      const videoTracks = stream.getVideoTracks();
+      if (!videoTracks.length) {
+        logDebug('No video track in local stream');
+        setWarningMessage('No video track available. Please check your camera.');
+        stream.getTracks().forEach(track => track.stop());
+        return;
+      }
       setLocalStream(stream);
       setIsVideoOn(true);
       setIsAudioOn(true);
-      assignStreamToVideoElements(stream); // Assign stream before proceeding
+      logDebug('Local stream acquired successfully.');
+      logDebug(`Local stream tracks: video=${stream.getVideoTracks().length}, audio=${stream.getAudioTracks().length}`);
       socketRef.current.emit('join-room', roomId, socketRef.current.id, userName);
-      logDebug('Local stream acquired and room join emitted.');
+      setInRoom(true);
     } catch (err) {
       logDebug(`Error accessing media: ${err.name} - ${err.message}`);
-      alert('Failed to access camera/microphone.');
+      alert(`Failed to access camera/microphone: ${err.message}`);
     }
   };
 
@@ -572,6 +606,21 @@ const Video = () => {
         videoTrack.enabled = !videoTrack.enabled;
         setIsVideoOn(videoTrack.enabled);
         logDebug(`Video track ${videoTrack.enabled ? 'enabled' : 'disabled'}`);
+        if (!videoTrack.enabled) {
+          setWarningMessage('Your video is off. Other users will see a black screen.');
+        } else {
+          setWarningMessage('');
+        }
+        Object.values(peersRef.current).forEach(peer => {
+          const sender = peer._pc.getSenders().find(s => s.track?.kind === 'video');
+          if (sender) {
+            sender.replaceTrack(videoTrack);
+            logDebug(`Updated video track for peer ${peer._id || 'unknown'}`);
+          }
+        });
+      } else {
+        logDebug('No video track available to toggle');
+        setWarningMessage('No video track available. Please check your camera.');
       }
     }
   };
@@ -583,6 +632,16 @@ const Video = () => {
         audioTrack.enabled = !audioTrack.enabled;
         setIsAudioOn(audioTrack.enabled);
         logDebug(`Audio track ${audioTrack.enabled ? 'enabled' : 'disabled'}`);
+        Object.values(peersRef.current).forEach(peer => {
+          const sender = peer._pc.getSenders().find(s => s.track?.kind === 'audio');
+          if (sender) {
+            sender.replaceTrack(audioTrack);
+            logDebug(`Updated audio track for peer ${peer._id || 'unknown'}`);
+          }
+        });
+      } else {
+        logDebug('No audio track available to toggle');
+        setWarningMessage('No audio track available. Please check your microphone.');
       }
     }
   };
@@ -625,11 +684,20 @@ const Video = () => {
 
   const revertToCamera = async () => {
     try {
-      const cameraStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+      const cameraStream = await navigator.mediaDevices.getUserMedia({
+        video: { width: { ideal: 1280 }, height: { ideal: 720 } },
+        audio: true,
+      });
       const cameraTrack = cameraStream.getVideoTracks()[0];
+      if (!cameraTrack) {
+        logDebug('No video track in camera stream');
+        setWarningMessage('No video track available. Please check your camera.');
+        cameraStream.getTracks().forEach(track => track.stop());
+        return;
+      }
 
       if (localStream) {
-        localStream.getVideoTracks().forEach(track => track.stop());
+        localStream.getTracks().forEach(track => track.stop());
       }
 
       Object.values(peersRef.current).forEach(peer => {
@@ -645,6 +713,7 @@ const Video = () => {
         webcamRef.current.srcObject = cameraStream;
         setLocalStream(cameraStream);
         setIsScreenSharing(false);
+        setIsVideoOn(true);
       } else {
         logDebug('Video refs not available when reverting to camera');
       }
@@ -654,13 +723,40 @@ const Video = () => {
     }
   };
 
+  const restartPeerConnection = (userId) => {
+    logDebug(`Restarting peer connection for ${userId}`);
+    if (peersRef.current[userId]) {
+      clearTimeout(streamTimeoutRef.current[userId]);
+      peersRef.current[userId].destroy();
+      delete peersRef.current[userId];
+      setPeers((prev) => {
+        const newPeers = { ...prev };
+        delete newPeers[userId];
+        return newPeers;
+      });
+      if (peerVideoRefs.current[userId]) {
+        peerVideoRefs.current[userId].srcObject = null;
+        delete peerVideoRefs.current[userId];
+      }
+    }
+    const peer = createPeer(userId, isHost);
+    peersRef.current[userId] = peer;
+    setPeers((prev) => ({ ...prev, [userId]: peer }));
+    socketRef.current.emit('restart-peer', { roomId, userId });
+  };
+
   const createPeer = (userId, initiator) => {
     logDebug(`Creating peer for ${userId}, initiator: ${initiator}`);
-    if (!localStream) {
-      logDebug(`Local stream unavailable for ${userId}, aborting peer creation`);
-      return null;
+    if (localStream) {
+      logDebug(`Local stream tracks: video=${localStream.getVideoTracks().length}, audio=${localStream.getAudioTracks().length}`);
+      if (!localStream.getVideoTracks().length) {
+        logDebug('No video track in local stream');
+        setWarningMessage('No video track available. Please check your camera or enable video.');
+      }
+    } else {
+      logDebug('No local stream available when creating peer');
+      setWarningMessage('No local stream available. Please check your camera.');
     }
-
     const peer = new SimplePeer({
       initiator,
       trickle: true,
@@ -670,8 +766,9 @@ const Video = () => {
           { urls: 'stun:stun.l.google.com:19302' },
           { urls: 'stun:stun1.l.google.com:19302' },
           { urls: 'stun:stun2.l.google.com:19302' },
+          { urls: 'stun:global.stun.twilio.com:3478' },
           {
-            urls: 'turn:openrelay.metered.ca:80',
+            urls: ['turn:openrelay.metered.ca:80', 'turn:openrelay.metered.ca:443'],
             username: 'openrelayproject',
             credential: 'openrelayproject',
           },
@@ -685,48 +782,91 @@ const Video = () => {
     });
 
     peer.on('signal', (signal) => {
-      setTimeout(() => {
-        if (signal.type === 'offer') {
-          logDebug(`Sending offer to ${userId}`);
-          socketRef.current.emit('offer', { signal, to: userId });
-        } else if (signal.type === 'answer') {
-          logDebug(`Sending answer to ${userId}`);
-          socketRef.current.emit('answer', { signal, to: userId });
-        } else if (signal.candidate) {
-          logDebug(`Sending ICE candidate to ${userId}`);
-          socketRef.current.emit('ice-candidate', { candidate: signal.candidate, to: userId });
-        }
-      }, 100);
+      logDebug(`Signal generated for ${userId}, type: ${signal.type || 'candidate'}`);
+      if (signal.type === 'offer') {
+        socketRef.current.emit('offer', { signal, to: userId });
+      } else if (signal.type === 'answer') {
+        socketRef.current.emit('answer', { signal, to: userId });
+      } else if (signal.candidate) {
+        socketRef.current.emit('ice-candidate', { candidate: signal.candidate, to: userId });
+      }
     });
 
     peer.on('stream', (stream) => {
       logDebug(`Received stream from ${userId}`);
-      peersRef.current[userId] = peersRef.current[userId] || {};
+      if (!stream.getVideoTracks().length) {
+        logDebug(`No video tracks in stream from ${userId}`);
+        setWarningMessage(`No video stream received from ${connectionStatus[userId]?.userName || userId}`);
+        return;
+      }
       peersRef.current[userId].remoteStream = stream;
-      updatePeerVideo(userId, stream);
-      setConnectionStatus((prev) => ({ ...prev, [userId]: { ...prev[userId], status: 'connected' } }));
+      const assignStream = (attempt = 1) => {
+        if (peerVideoRefs.current[userId]) {
+          peerVideoRefs.current[userId].srcObject = stream;
+          peerVideoRefs.current[userId].play().catch((err) => {
+            logDebug(`Error playing video for ${userId}: ${err.message}`);
+            setWarningMessage(`Failed to play video for ${connectionStatus[userId]?.userName || userId}: ${err.message}`);
+          });
+          logDebug(`Stream assigned to video element for ${userId}`);
+          setConnectionStatus((prev) => ({ ...prev, [userId]: { ...prev[userId], status: 'connected' } }));
+          clearTimeout(streamTimeoutRef.current[userId]);
+        } else if (attempt <= 20) {
+          logDebug(`Video element for ${userId} not ready, retrying (${attempt}/20)...`);
+          setTimeout(() => assignStream(attempt + 1), 500);
+        } else {
+          logDebug(`Failed to assign stream for ${userId} after 20 attempts`);
+          setWarningMessage(`Failed to assign video stream for ${connectionStatus[userId]?.userName || userId}`);
+        }
+      };
+      assignStream();
     });
 
     peer.on('connect', () => {
       logDebug(`Peer connection established with ${userId}`);
       setConnectionStatus((prev) => ({ ...prev, [userId]: { ...prev[userId], status: 'connected' } }));
+      if (localStream) {
+        localStream.getTracks().forEach(track => {
+          try {
+            peer._pc.addTrack(track, localStream);
+            logDebug(`Added track ${track.kind} (enabled=${track.enabled}) to peer ${userId}`);
+          } catch (err) {
+            logDebug(`Error adding track to peer ${userId}: ${err.message}`);
+          }
+        });
+      }
+      streamTimeoutRef.current[userId] = setTimeout(() => {
+        if (!peersRef.current[userId]?.remoteStream) {
+          logDebug(`No stream received from ${userId} within ${STREAM_TIMEOUT_MS/1000}s`);
+          setWarningMessage(`No video stream received from ${connectionStatus[userId]?.userName || userId}. Attempting to reconnect...`);
+          restartPeerConnection(userId);
+        }
+      }, STREAM_TIMEOUT_MS);
     });
 
     peer.on('error', (err) => {
       logDebug(`Peer error (${userId}): ${err.message}`);
       setConnectionStatus((prev) => ({ ...prev, [userId]: { ...prev[userId], status: 'failed' } }));
+      setWarningMessage(`Peer connection error with ${connectionStatus[userId]?.userName || userId}: ${err.message}`);
+      restartPeerConnection(userId);
     });
 
     peer.on('close', () => {
       logDebug(`Peer connection closed for ${userId}`);
       setConnectionStatus((prev) => ({ ...prev, [userId]: { ...prev[userId], status: 'disconnected' } }));
-      if (peerVideoRefs.current[userId]) {
-        peerVideoRefs.current[userId].srcObject = null;
+      clearTimeout(streamTimeoutRef.current[userId]);
+    });
+
+    peer.on('iceConnectionStateChange', () => {
+      logDebug(`ICE connection state for ${userId}: ${peer.iceConnectionState}`);
+      if (peer.iceConnectionState === 'failed' || peer.iceConnectionState === 'disconnected') {
+        logDebug(`Restarting peer connection due to ICE state ${peer.iceConnectionState} for ${userId}`);
+        restartPeerConnection(userId);
       }
     });
 
     peersRef.current[userId] = peer;
     if (pendingCandidates.current[userId]) {
+      logDebug(`Applying ${pendingCandidates.current[userId].length} queued signals for ${userId}`);
       pendingCandidates.current[userId].forEach((signal) => {
         peer.signal(signal);
       });
@@ -734,18 +874,6 @@ const Video = () => {
     }
 
     return peer;
-  };
-
-  const updatePeerVideo = (userId, stream) => {
-    if (peerVideoRefs.current[userId]) {
-      peerVideoRefs.current[userId].srcObject = stream;
-      peerVideoRefs.current[userId].play().catch((err) => {
-        logDebug(`Error playing video for ${userId}: ${err.message}`);
-      });
-    } else {
-      // Retry after a short delay if the element isn't ready
-      setTimeout(() => updatePeerVideo(userId, stream), 500);
-    }
   };
 
   const sendChatMessage = () => {
@@ -793,6 +921,9 @@ const Video = () => {
         <video ref={webcamRef} autoPlay playsInline className="hidden" />
         {!inRoom ? (
           <div className="flex flex-col items-center gap-4">
+            <div className="text-sm text-gray-600">
+              Server Connection: {socketConnected ? 'Connected' : 'Disconnected'}
+            </div>
             <input
               type="text"
               value={userName}
@@ -803,7 +934,10 @@ const Video = () => {
             <div className="flex flex-col gap-2 w-80">
               <button
                 onClick={createRoom}
-                className="bg-green-600 text-white px-6 py-3 rounded-lg hover:bg-green-700"
+                disabled={!socketConnected}
+                className={`bg-green-600 text-white px-6 py-3 rounded-lg hover:bg-green-700 ${
+                  !socketConnected ? 'opacity-50 cursor-not-allowed' : ''
+                }`}
               >
                 Create Room (Host)
               </button>
@@ -817,9 +951,21 @@ const Video = () => {
                 />
                 <button
                   onClick={joinRoom}
-                  className="bg-blue-600 text-white px-6 py-3 rounded-lg hover:bg-blue-700"
+                  disabled={!socketConnected}
+                  className={`bg-blue-600 text-white px-6 py-3 rounded-lg hover:bg-blue-700 ${
+                    !socketConnected ? 'opacity-50 cursor-not-allowed' : ''
+                  }`}
                 >
                   Join Room
+                </button>
+                <button
+                  onClick={testCamera}
+                  disabled={cameraTestActive}
+                  className={`bg-purple-600 text-white px-6 py-3 rounded-lg hover:bg-purple-700 ${
+                    cameraTestActive ? 'opacity-50 cursor-not-allowed' : ''
+                  }`}
+                >
+                  {cameraTestActive ? 'Testing Camera...' : 'Test Camera'}
                 </button>
               </div>
             </div>
@@ -856,6 +1002,15 @@ const Video = () => {
               >
                 {showDebug ? 'Hide Debug' : 'Show Debug'}
               </button>
+              <button
+                onClick={testCamera}
+                disabled={cameraTestActive}
+                className={`bg-purple-600 text-white px-4 py-2 rounded-lg hover:bg-purple-700 ${
+                  cameraTestActive ? 'opacity-50 cursor-not-allowed' : ''
+                }`}
+              >
+                {cameraTestActive ? 'Testing Camera...' : 'Test Camera'}
+              </button>
             </div>
             {currentAlert && (
               <div className="fixed top-5 left-1/2 transform -translate-x-1/2 bg-yellow-400 text-black p-4 rounded-lg shadow-lg z-50">
@@ -863,6 +1018,17 @@ const Video = () => {
                 <p className="text-sm">Type: {currentAlert.violationType} | Time: {new Date(currentAlert.timestamp).toLocaleTimeString()}</p>
                 <button
                   onClick={() => setCurrentAlert(null)}
+                  className="mt-2 bg-gray-800 text-white px-3 py-1 rounded"
+                >
+                  Dismiss
+                </button>
+              </div>
+            )}
+            {warningMessage && (
+              <div className="fixed top-16 left-1/2 transform -translate-x-1/2 bg-red-600 text-white p-4 rounded-lg shadow-lg z-50">
+                <p className="font-semibold">{warningMessage}</p>
+                <button
+                  onClick={() => setWarningMessage('')}
                   className="mt-2 bg-gray-800 text-white px-3 py-1 rounded"
                 >
                   Dismiss
@@ -883,7 +1049,6 @@ const Video = () => {
                     You ({userName}) {proctoringActive && faceDetected ? '✅ Face Detected' : proctoringActive ? '❌ Face Not Detected' : ''}
                   </div>
                   <div className="text-sm text-gray-600">Violations: {cheatCount}/{MAX_VIOLATIONS}</div>
-                  {warningMessage && <div className="text-sm text-red-600">{warningMessage}</div>}
                 </div>
                 {Object.keys(peers).map((userId) => {
                   const peerStatus = connectionStatus[userId] || { userName: `Peer: ${shortId(userId)}`, status: 'connecting', proctoring: false };
@@ -891,15 +1056,14 @@ const Video = () => {
                     <div key={userId} className="flex flex-col items-center bg-white p-3 rounded-lg shadow-md hover:shadow-lg transition-transform hover:-translate-y-1">
                       <video
                         ref={(el) => {
-                          if (el) {
+                          if (el && !peerVideoRefs.current[userId]) {
                             peerVideoRefs.current[userId] = el;
                             if (peersRef.current[userId]?.remoteStream) {
                               el.srcObject = peersRef.current[userId].remoteStream;
                               el.play().catch((err) => {
                                 logDebug(`Error playing video for ${userId}: ${err.message}`);
+                                setWarningMessage(`Failed to play video for ${peerStatus.userName}: ${err.message}`);
                               });
-                            } else {
-                              el.srcObject = null; // Clear if no remote stream
                             }
                           }
                         }}
