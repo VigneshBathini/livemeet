@@ -140,6 +140,12 @@ const Video = () => {
     socketRef.current.on('user-left', handleUserLeft);
     socketRef.current.on('chat-message', handleChatMessage);
     socketRef.current.on('toggle-media', handleToggleMedia);
+    socketRef.current.on('face-detection-alert', (data) => {
+      if (data.userId === socketRef.current.id) {
+        logDebug(`Received face detection alert: ${data.message}`);
+        addAlert(data.message, 'warning');
+      }
+    });
 
     const testIceServers = async () => {
       const pc = new RTCPeerConnection({
@@ -218,14 +224,32 @@ const Video = () => {
               const detections = await faceapi.detectAllFaces(videoElement).withFaceLandmarks();
               logDebug(`Face detection for ${userId}: ${detections.length} faces detected`);
               if (detections.length === 0) {
-                addAlert(
-                  `No face detected for ${connectionStatus[userId]?.userName || shortId(userId)}. Please ensure visibility.`,
-                  'warning'
-                );
+                const participantName = connectionStatus[userId]?.userName || shortId(userId);
+                const hostMessage = `No face detected for ${participantName}.`;
+                const participantMessage = 'No face detected. Please ensure you are visible.';
+                // Alert for host
+                addAlert(hostMessage, 'warning');
+                // Emit alert to participant
+                socketRef.current.emit('face-detection-alert', {
+                  roomId,
+                  userId,
+                  message: participantMessage,
+                });
+                logDebug(`Sent face detection alert to ${userId}`);
               }
             } catch (err) {
               logDebug(`Face detection error for ${userId}: ${err.message}`);
-              addAlert(`Face detection error for ${connectionStatus[userId]?.userName || shortId(userId)}.`, 'error');
+              const participantName = connectionStatus[userId]?.userName || shortId(userId);
+              const hostMessage = `Face detection error for ${participantName}.`;
+              const participantMessage = 'Face detection error. Please check your video feed.';
+              // Alert for host
+              addAlert(hostMessage, 'error');
+              // Emit alert to participant
+              socketRef.current.emit('face-detection-alert', {
+                roomId,
+                userId,
+                message: participantMessage,
+              });
             }
           }, 5000);
           detectionIntervals.current[userId] = interval;

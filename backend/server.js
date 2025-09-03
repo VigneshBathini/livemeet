@@ -78,6 +78,14 @@ io.on('connection', (socket) => {
     });
   });
 
+  socket.on('face-detection-alert', (data) => {
+    console.log(`Face detection alert for ${data.userId} in room ${data.roomId}: ${data.message}`);
+    socket.to(data.roomId).to(data.userId).emit('face-detection-alert', {
+      userId: data.userId,
+      message: data.message
+    });
+  });
+
   socket.on('disconnect', () => {
     socket.broadcast.emit('user-left', socket.id);
     console.log('User disconnected:', socket.id);
