@@ -1,3 +1,6 @@
+//working
+
+// server.js
 const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
@@ -27,10 +30,11 @@ const io = new Server(server, {
   }
 });
 
-// Test endpoints (place below static file serving)
+// Store host socket ID for each room
+const roomHosts = {};
+
 app.get('/test', (req, res) => res.send('Server is running'));
 
-// Handle all other routes with React's index.html
 app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, '..', 'frontend', 'build', 'index.html'));
 });
@@ -40,9 +44,14 @@ io.on('connection', (socket) => {
 
   socket.on('join-room', (roomId, userId, userName, isHost) => {
     socket.join(roomId);
+    if (isHost) {
+      roomHosts[roomId] = socket.id; 
+      console.log(`Host ${userId || socket.id} (${userName}) joined room ${roomId}`);
+    } else {
+      console.log(`Participant ${userId || socket.id} (${userName}) joined room ${roomId}`);
+    }
     socket.to(roomId).emit('user-joined', userId || socket.id, userName, isHost);
-    console.log(`${userId || socket.id} (${userName}) ${isHost ? 'host' : 'participant'} joined room ${roomId}`);
-    // Debug: Log room members
+    
     io.in(roomId).allSockets().then(sockets => {
       console.log(`Users in room ${roomId}: ${[...sockets].join(', ')}`);
     });
@@ -78,6 +87,14 @@ io.on('connection', (socket) => {
     });
   });
 
+  socket.on('toggle-proctor', (data) => {
+    console.log(`Toggle proctor for ${data.userId} in room ${data.roomId}: proctor=${data.proctor}`);
+    socket.to(data.roomId).to(data.userId).emit('toggle-proctor', {
+      userId: data.userId,
+      proctor: data.proctor
+    });
+  });
+
   socket.on('face-detection-alert', (data) => {
     console.log(`Face detection alert for ${data.userId} in room ${data.roomId}: ${data.message}`);
     socket.to(data.roomId).to(data.userId).emit('face-detection-alert', {
@@ -86,8 +103,35 @@ io.on('connection', (socket) => {
     });
   });
 
+  socket.on('tab-switch-alert', (data) => {
+    console.log(`Tab switch alert from ${data.userId} (${data.userName}) in room ${data.roomId}: ${data.message}`);
+    // Send to host only
+    if (roomHosts[data.roomId]) {
+      socket.to(roomHosts[data.roomId]).emit('tab-switch-alert', {
+        userId: data.userId,
+        userName: data.userName,
+        message: data.message
+      });
+    }
+  });
+
+  socket.on('screen-share-status', (data) => {
+    console.log(`Screen share status from ${socket.id} (${data.userName}) in room ${data.roomId}: ${data.isScreenSharing}`);
+    socket.to(data.roomId).emit('screen-share-status', {
+      userId: socket.id,
+      userName: data.userName,
+      isScreenSharing: data.isScreenSharing,
+    });
+  });
+
   socket.on('disconnect', () => {
     socket.broadcast.emit('user-left', socket.id);
+    // Remove host from roomHosts if they disconnect
+    for (const roomId in roomHosts) {
+      if (roomHosts[roomId] === socket.id) {
+        delete roomHosts[roomId];
+      }
+    }
     console.log('User disconnected:', socket.id);
   });
 });

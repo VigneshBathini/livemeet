@@ -4,8 +4,7 @@ import SimplePeer from 'simple-peer';
 import * as faceapi from 'face-api.js';
 import { v4 as uuidv4 } from 'uuid';
 
-// const SIGNALING_SERVER_URL = 'http://localhost:3000';
-const SIGNALING_SERVER_URL = 'https://livemeet-ribm.onrender.com';
+const SIGNALING_SERVER_URL = 'http://localhost:3000';
 
 class ErrorBoundary extends React.Component {
   state = { hasError: false };
@@ -16,7 +15,7 @@ class ErrorBoundary extends React.Component {
 
   render() {
     if (this.state.hasError) {
-      return <h1>Something went wrong. Please refresh the page.</h1>;
+      return <div className="error-message">Something went wrong. Please refresh the page.</div>;
     }
     return this.props.children;
   }
@@ -38,7 +37,8 @@ const Alert = ({ message, type, onClose }) => {
 
 const Video = () => {
   const [roomId, setRoomId] = useState('');
-  const [localStream, setLocalStream] = useState(null);
+  const [localStream, setLocalStream] = useState(null); 
+  const [screenStream, setScreenStream] = useState(null); 
   const [inRoom, setInRoom] = useState(false);
   const [peers, setPeers] = useState({});
   const [debugLog, setDebugLog] = useState([]);
@@ -49,14 +49,19 @@ const Video = () => {
   const [messages, setMessages] = useState([]);
   const [chatInput, setChatInput] = useState('');
   const [showDebug, setShowDebug] = useState(false);
+  const [showChat, setShowChat] = useState(false);
   const [userName, setUserName] = useState('');
   const [isHost, setIsHost] = useState(false);
   const [participantControls, setParticipantControls] = useState({});
   const [alerts, setAlerts] = useState([]);
+  const lastTabSwitch = useRef(0);
+  const renegotiationQueue = useRef({});
+  const pendingRemoteStreams = useRef({});
+  const videoStreamCount = useRef({});
 
   const socketRef = useRef();
-  const userVideoRef = useRef();
-  const peerVideoRefs = useRef({});
+  const userVideoRef = useRef({}); 
+  const peerVideoRefs = useRef({}); 
   const pendingCandidates = useRef({});
   const peersRef = useRef({});
   const chatRef = useRef();
@@ -76,14 +81,62 @@ const Video = () => {
     setDebugLog((prev) => [...prev, msg].slice(-50));
   }, []);
 
+  const shortId = (id) => id.slice(0, 8);
+
+  // Assign screen share stream to local video element
   useEffect(() => {
-    const isSupportedBrowser = !!window.RTCPeerConnection && !!navigator.mediaDevices.getUserMedia;
+    if (screenStream && userVideoRef.current.screen) {
+      logDebug('Assigning screen share stream to local video element.');
+      userVideoRef.current.screen.srcObject = screenStream;
+      userVideoRef.current.screen.play().catch((err) => {
+        logDebug(`Error playing local screen share stream: ${err.message}`);
+        addAlert('Failed to play local screen share stream.', 'error');
+      });
+    } else if (screenStream && !userVideoRef.current.screen) {
+      logDebug('Screen share video element not yet available.');
+    }
+  }, [screenStream, logDebug, addAlert]);
+
+  useEffect(() => {
+    if (!isScreenSharing && userVideoRef.current.screen) {
+      userVideoRef.current.screen.srcObject = null;
+    }
+  }, [isScreenSharing]);
+
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (document.hidden && !isScreenSharing && participantControls[socketRef.current.id]?.proctor) {
+							   
+													   
+									
+        logDebug('Tab switch detected during proctor mode and screen sharing');
+        addAlert('Tab switching detected. Please remain on the current tab during proctor mode.', 'warning');
+										   
+        socketRef.current.emit('tab-switch-alert', {
+          roomId,
+          userId: socketRef.current.id,
+          userName,
+          message: `${userName} switched tabs during proctor mode.`,
+        });
+				
+																		 
+																						 
+		 
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, [isScreenSharing, participantControls, roomId, userName, logDebug, addAlert]);
+
+  useEffect(() => {
+	const isSupportedBrowser = !!window.RTCPeerConnection && !!navigator.mediaDevices.getUserMedia;
     if (!isSupportedBrowser) {
       logDebug('Warning: Your browser may not fully support WebRTC.');
       addAlert('Please use a modern browser like Chrome or Firefox for video calls.', 'error');
     }
 
-    // Load face-api.js models
     const loadFaceApiModels = async () => {
       try {
         await Promise.all([
@@ -98,9 +151,9 @@ const Video = () => {
       }
     };
     loadFaceApiModels();
-  }, [logDebug, addAlert]);
-
-  useEffect(() => {
+  }, [logDebug, addAlert]);	
+  
+    useEffect(() => {
     socketRef.current = io(SIGNALING_SERVER_URL, {
       transports: ['websocket', 'polling'],
       reconnection: true,
@@ -146,6 +199,39 @@ const Video = () => {
         addAlert(data.message, 'warning');
       }
     });
+    socketRef.current.on('tab-switch-alert', (data) => {
+      if (isHost) {
+        logDebug(`Tab switch alert from ${data.userId} (${data.userName}): ${data.message}`);
+        addAlert(data.message, 'warning');
+      }
+    });
+    socketRef.current.on('toggle-proctor', (data) => {
+      if (data.userId === socketRef.current.id) {
+        setParticipantControls((prev) => ({
+          ...prev,
+          [socketRef.current.id]: {
+            ...prev[socketRef.current.id],
+            proctor: data.proctor,
+          },
+        }));
+        logDebug(`Proctor mode ${data.proctor ? 'enabled' : 'disabled'} by host`);
+        addAlert(`Proctor mode ${data.proctor ? 'enabled' : 'disabled'} by host.`, 'info');
+      }
+    });
+    socketRef.current.on('screen-share-status', (data) => {
+      logDebug(`Received screen share status from ${data.userId} (${data.userName}): isScreenSharing=${data.isScreenSharing}`);
+      setConnectionStatus((prev) => ({
+        ...prev,
+        [data.userId]: {
+          ...prev[data.userId],
+          streams: {
+            ...prev[data.userId]?.streams,
+            screen: data.isScreenSharing,
+          },
+        },
+      }));
+      addAlert(`${data.userName} ${data.isScreenSharing ? 'started' : 'stopped'} screen sharing.`, 'info');
+    });
 
     const testIceServers = async () => {
       const pc = new RTCPeerConnection({
@@ -181,26 +267,28 @@ const Video = () => {
     };
   }, [logDebug, roomId, inRoom, userName, isHost, addAlert]);
 
+  // Tag camera track after localStream is set
+  useEffect(() => {
+    if (localStream) {
+      const videoTrack = localStream.getVideoTracks()[0];
+      if (videoTrack) {
+        videoTrack._type = 'camera'; // Tag for reliable classification
+        logDebug(`Tagged camera track with type: camera (ID: ${videoTrack.id})`);
+      }
+    }
+  }, [localStream, logDebug]);
+
   useEffect(() => {
     if (!localStream || !inRoom) return;
 
-    const assignStream = (attempt = 1) => {
-      if (userVideoRef.current) {
-        userVideoRef.current.srcObject = localStream;
-        userVideoRef.current.play().catch((err) => {
-          logDebug(`Error playing local video: ${err.message}`);
-          addAlert('Failed to play local video.', 'error');
-        });
-        logDebug('Local stream assigned to video element.');
-      } else if (attempt <= 10) {
-        logDebug(`Retrying local stream assignment (${attempt}/10)...`);
-        setTimeout(() => assignStream(attempt + 1), 1000);
-      } else {
-        logDebug('Failed to assign local stream after 10 attempts');
-        addAlert('Failed to assign local video stream.', 'error');
-      }
-    };
-    assignStream();
+    if (userVideoRef.current.camera) {
+      userVideoRef.current.camera.srcObject = localStream;
+      userVideoRef.current.camera.play().catch((err) => {
+        logDebug(`Error playing local camera stream: ${err.message}`);
+        addAlert('Failed to play local camera stream.', 'error');
+      });
+      logDebug('Local camera stream assigned to video element.');
+    }
   }, [localStream, inRoom, logDebug, addAlert]);
 
   useEffect(() => {
@@ -217,19 +305,17 @@ const Video = () => {
       const existingInterval = detectionIntervals.current[userId];
 
       if (proctorEnabled && !existingInterval) {
-        const videoElement = peerVideoRefs.current[userId];
+        const videoElement = peerVideoRefs.current[userId]?.camera;
         if (videoElement && videoElement.srcObject) {
           const interval = setInterval(async () => {
             try {
               const detections = await faceapi.detectAllFaces(videoElement).withFaceLandmarks();
-              logDebug(`Face detection for ${userId}: ${detections.length} faces detected`);
+              logDebug(`Face detection for ${userId} (camera stream): ${detections.length} faces detected`);
               if (detections.length === 0) {
                 const participantName = connectionStatus[userId]?.userName || shortId(userId);
-                const hostMessage = `No face detected for ${participantName}.`;
-                const participantMessage = 'No face detected. Please ensure you are visible.';
-                // Alert for host
+                const hostMessage = `No face detected for ${participantName} on camera stream.`;
+                const participantMessage = 'No face detected. Please ensure you are visible on your camera.';
                 addAlert(hostMessage, 'warning');
-                // Emit alert to participant
                 socketRef.current.emit('face-detection-alert', {
                   roomId,
                   userId,
@@ -238,13 +324,11 @@ const Video = () => {
                 logDebug(`Sent face detection alert to ${userId}`);
               }
             } catch (err) {
-              logDebug(`Face detection error for ${userId}: ${err.message}`);
+              logDebug(`Face detection error for ${userId} (camera stream): ${err.message}`);
               const participantName = connectionStatus[userId]?.userName || shortId(userId);
-              const hostMessage = `Face detection error for ${participantName}.`;
-              const participantMessage = 'Face detection error. Please check your video feed.';
-              // Alert for host
+              const hostMessage = `Face detection error for ${participantName} on camera stream.`;
+              const participantMessage = 'Face detection error. Please check your camera feed.';
               addAlert(hostMessage, 'error');
-              // Emit alert to participant
               socketRef.current.emit('face-detection-alert', {
                 roomId,
                 userId,
@@ -253,9 +337,9 @@ const Video = () => {
             }
           }, 5000);
           detectionIntervals.current[userId] = interval;
-          logDebug(`Started face detection for ${userId}`);
+          logDebug(`Started face detection for ${userId} on camera stream`);
         } else {
-          logDebug(`Video element not ready for ${userId}`);
+          logDebug(`Camera video element not ready for ${userId}`);
         }
       } else if (!proctorEnabled && existingInterval) {
         clearInterval(existingInterval);
@@ -269,6 +353,19 @@ const Video = () => {
       detectionIntervals.current = {};
     };
   }, [participantControls, connectionStatus, logDebug, isHost, addAlert]);
+
+  // Periodic debug log for pending streams
+  useEffect(() => {
+    const interval = setInterval(() => {
+      Object.keys(pendingRemoteStreams.current).forEach(userId => {
+        const pending = Object.values(pendingRemoteStreams.current[userId] || {}).filter(s => s);
+        if (pending.length > 0) {
+          logDebug(`Pending streams for ${userId}: ${pending.length}`);
+        }
+      });
+    }, 5000);
+    return () => clearInterval(interval);
+  }, [logDebug]);
 
   const checkPermissions = async () => {
     try {
@@ -305,13 +402,18 @@ const Video = () => {
       setLocalStream(stream);
       setIsVideoOn(true);
       setIsAudioOn(true);
-      logDebug('Local stream acquired successfully.');
-      logDebug(`Local stream tracks: ${stream.getTracks().map((t) => `${t.kind}:${t.enabled}`).join(', ')}`);
+      logDebug('Local camera stream acquired successfully.');
+      logDebug(`Local camera stream tracks: ${stream.getTracks().map((t) => `${t.kind}:${t.enabled}`).join(', ')}`);
     } catch (err) {
       logDebug(`Error accessing media: ${err.name} - ${err.message}`);
       addAlert('Failed to access camera/microphone. Check permissions.', 'error');
       return;
     }
+
+    setParticipantControls((prev) => ({
+      ...prev,
+      [socketRef.current.id]: { video: true, audio: true, proctor: false },
+    }));
 
     socketRef.current.emit('join-room', newRoomId, socketRef.current.id, userName, true);
     setInRoom(true);
@@ -340,8 +442,8 @@ const Video = () => {
       setLocalStream(stream);
       setIsVideoOn(true);
       setIsAudioOn(true);
-      logDebug('Local stream acquired successfully.');
-      logDebug(`Local stream tracks: ${stream.getTracks().map((t) => `${t.kind}:${t.enabled}`).join(', ')}`);
+      logDebug('Local camera stream acquired successfully.');
+      logDebug(`Local camera stream tracks: ${stream.getTracks().map((t) => `${t.kind}:${t.enabled}`).join(', ')}`);
       addAlert(`Joined room: ${roomId}`, 'success');
     } catch (err) {
       logDebug(`Error accessing media: ${err.name} - ${err.message}`);
@@ -349,18 +451,91 @@ const Video = () => {
       return;
     }
 
+    setParticipantControls((prev) => ({
+      ...prev,
+      [socketRef.current.id]: { video: true, audio: true, proctor: false },
+    }));
+
     socketRef.current.emit('join-room', roomId, socketRef.current.id, userName, false);
     setInRoom(true);
   };
 
-  const toggleVideo = () => {
+  const toggleVideo = async () => {
     if (localStream) {
       const videoTrack = localStream.getVideoTracks()[0];
       if (videoTrack) {
         videoTrack.enabled = !videoTrack.enabled;
         setIsVideoOn(videoTrack.enabled);
-        logDebug(`Video track ${videoTrack.enabled ? 'enabled' : 'disabled'}`);
-        addAlert(`Video ${videoTrack.enabled ? 'enabled' : 'disabled'}`, 'info');
+        logDebug(`Camera track ${videoTrack.enabled ? 'enabled' : 'disabled'}`);
+        addAlert(`Camera ${videoTrack.enabled ? 'enabled' : 'disabled'}`, 'info');
+
+        Object.values(peersRef.current).forEach((peer) => {
+          const sender = peer._pc.getSenders().find((s) => s.track?.kind === 'video' && !s.track.label?.includes('screen'));
+          if (sender) {
+            if (videoTrack.enabled) {
+              sender.replaceTrack(videoTrack).catch((err) => {
+                logDebug(`Error replacing camera track for peer ${peer._id || 'unknown'}: ${err.message}`);
+                addAlert('Failed to update camera stream.', 'error');
+              });
+            } else {
+              sender.replaceTrack(null).catch((err) => {
+                logDebug(`Error removing camera track for peer ${peer._id || 'unknown'}: ${err.message}`);
+                addAlert('Failed to stop camera stream.', 'error');
+              });
+            }
+            logDebug(`Updated camera track for peer ${peer._id || 'unknown'}: enabled=${videoTrack.enabled}`);
+            renegotiatePeer(peer, peer._id);
+          }
+        });
+
+        if (!isHost && socketRef.current?.connected) {
+          socketRef.current.emit('toggle-media', {
+            roomId,
+            userId: socketRef.current.id,
+            video: videoTrack.enabled,
+            audio: isAudioOn,
+          });
+        }
+      } else {
+        try {
+          const newStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: isAudioOn });
+          const newVideoTrack = newStream.getVideoTracks()[0];
+          setLocalStream(newStream);
+          setIsVideoOn(true);
+          logDebug('Reacquired camera stream successfully.');
+          addAlert('Camera stream reacquired.', 'success');
+
+          Object.values(peersRef.current).forEach((peer) => {
+            const sender = peer._pc.getSenders().find((s) => s.track?.kind === 'video' && !s.track.label?.includes('screen'));
+            if (sender) {
+              sender.replaceTrack(newVideoTrack).catch((err) => {
+                logDebug(`Error replacing new camera track for peer ${peer._id || 'unknown'}: ${err.message}`);
+                addAlert('Failed to update camera stream.', 'error');
+              });
+              renegotiatePeer(peer, peer._id);
+            }
+          });
+
+          if (userVideoRef.current?.camera) {
+            userVideoRef.current.camera.srcObject = newStream;
+            userVideoRef.current.camera.play().catch((err) => {
+              logDebug(`Error playing reacquired camera stream: ${err.message}`);
+              addAlert('Failed to play reacquired camera stream.', 'error');
+            });
+          }
+
+          if (!isHost && socketRef.current?.connected) {
+            socketRef.current.emit('toggle-media', {
+              roomId,
+              userId: socketRef.current.id,
+              video: true,
+              audio: isAudioOn,
+            });
+          }
+        } catch (err) {
+          logDebug(`Error reacquiring camera stream: ${err.message}`);
+          addAlert('Failed to reacquire camera stream.', 'error');
+        }
       }
     }
   };
@@ -373,107 +548,206 @@ const Video = () => {
         setIsAudioOn(audioTrack.enabled);
         logDebug(`Audio track ${audioTrack.enabled ? 'enabled' : 'disabled'}`);
         addAlert(`Audio ${audioTrack.enabled ? 'enabled' : 'disabled'}`, 'info');
-      }
-    }
-  };
 
-  const toggleScreenShare = async () => {
-    if (!isScreenSharing) {
-      try {
-        const screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
-        const screenTrack = screenStream.getVideoTracks()[0];
-
-        if (localStream) {
-          localStream.getVideoTracks().forEach((track) => track.stop());
+        if (!isHost && socketRef.current?.connected) {
+          socketRef.current.emit('toggle-media', {
+            roomId,
+            userId: socketRef.current.id,
+            video: isVideoOn,
+            audio: audioTrack.enabled,
+          });
         }
-
-        Object.values(peersRef.current).forEach((peer) => {
-          const sender = peer._pc.getSenders().find((s) => s.track?.kind === 'video');
-          if (sender) {
-            sender.replaceTrack(screenTrack);
-            logDebug(`Replaced video track with screen share for peer ${peer._id || 'unknown'}`);
-          }
-        });
-
-        const assignScreenStream = (attempt = 1) => {
-          if (userVideoRef.current) {
-            userVideoRef.current.srcObject = screenStream;
-            userVideoRef.current.play().catch((err) => {
-              logDebug(`Error playing screen share: ${err.message}`);
-              addAlert('Failed to play screen share.', 'error');
-            });
-            logDebug('Screen stream assigned to local video element.');
-          } else if (attempt <= 10) {
-            logDebug(`Retrying screen stream assignment (${attempt}/10)...`);
-            setTimeout(() => assignScreenStream(attempt + 1), 1000);
-          } else {
-            logDebug('Failed to assign screen stream after 10 attempts');
-            addAlert('Failed to assign screen share stream.', 'error');
-          }
-        };
-        assignScreenStream();
-
-        setLocalStream(screenStream);
-        setIsScreenSharing(true);
-        addAlert('Screen sharing started.', 'success');
-
-        screenTrack.onended = () => {
-          logDebug('Screen sharing stopped by user.');
-          addAlert('Screen sharing stopped.', 'info');
-          revertToCamera();
-        };
-      } catch (err) {
-        logDebug(`Error starting screen share: ${err.message}`);
-        addAlert('Failed to start screen sharing. Try again.', 'error');
       }
-    } else {
-      revertToCamera();
     }
   };
 
-  const revertToCamera = async () => {
-    try {
-      const cameraStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-      const cameraTrack = cameraStream.getVideoTracks()[0];
+  // Function to renegotiate peer connection after adding/removing tracks
+  const renegotiatePeer = async (peer, userId, retryCount = 0) => {
+  if (renegotiationQueue.current[userId]) {
+    logDebug(`Renegotiation for ${userId} already queued, skipping...`);
+    return;
+  }
+  renegotiationQueue.current[userId] = true;
 
-      if (localStream) {
-        localStream.getVideoTracks().forEach((track) => track.stop());
+  try {
+    if (peer._pc.signalingState !== 'stable') {
+      if (retryCount < 5) { // Increased retries
+        logDebug(`Peer ${userId} not in stable state (state: ${peer._pc.signalingState}), retrying renegotiation (${retryCount + 1}/5)...`);
+        setTimeout(() => {
+          delete renegotiationQueue.current[userId];
+          renegotiatePeer(peer, userId, retryCount + 1);
+        }, 1000); // Increased delay
+        return;
+      } else {
+        logDebug(`Failed to renegotiate peer ${userId}: not in stable state after 5 retries`);
+        addAlert(`Failed to renegotiate connection with ${connectionStatus[userId]?.userName || shortId(userId)}.`, 'error');
+        delete renegotiationQueue.current[userId];
+        return;
+      }
+    }
+    const offer = await peer._pc.createOffer({ offerToReceiveVideo: true, offerToReceiveAudio: true });
+    await peer._pc.setLocalDescription(offer);
+    logDebug(`Sending new offer to ${userId} after track change: ${JSON.stringify(offer).slice(0, 100)}...`);
+    socketRef.current.emit('offer', { signal: offer, to: userId });
+
+    // Wait for answer with a timeout
+    const answerTimeout = setTimeout(() => {
+      logDebug(`Timeout waiting for answer from ${userId}`);
+      addAlert(`No answer received from ${connectionStatus[userId]?.userName || shortId(userId)} for renegotiation.`, 'error');
+      delete renegotiationQueue.current[userId];
+    }, 10000);
+
+    peer._pc.onnegotiationneeded = () => {
+      logDebug(`Negotiation needed for ${userId}`);
+    };
+
+    socketRef.current.once('answer', (data) => {
+      if (data.from === userId) {
+        clearTimeout(answerTimeout);
+        logDebug(`Received answer from ${userId} for renegotiation`);
+        peer.signal(data.signal);
+        delete renegotiationQueue.current[userId];
+      }
+    });
+  } catch (err) {
+    logDebug(`Error renegotiating peer connection for ${userId}: ${err.message}`);
+    addAlert(`Failed to renegotiate connection with ${connectionStatus[userId]?.userName || shortId(userId)}.`, 'error');
+    delete renegotiationQueue.current[userId];
+  }
+};
+
+
+ const toggleScreenShare = async () => {
+  if (!isScreenSharing) {
+    try {
+      const isProctorEnabled = participantControls[socketRef.current?.id]?.proctor || false;
+      addAlert(
+        isProctorEnabled
+          ? 'Proctor mode requires sharing your entire screen. Tab or window sharing is not allowed.'
+          : 'Select a screen, window, or tab to share.',
+        'info'
+      );
+
+      const videoConstraints = isProctorEnabled
+        ? { video: { displaySurface: 'monitor', cursor: 'never' } }
+        : { video: true };
+
+      const screenStream = await navigator.mediaDevices.getDisplayMedia(videoConstraints);
+      const screenTrack = screenStream.getVideoTracks()[0];
+      screenTrack._type = 'screen';
+      const settings = screenTrack.getSettings();
+      logDebug(`Screen share settings: ${JSON.stringify(settings)}`);
+      logDebug(`Tagged screen track with type: screen (ID: ${screenTrack.id})`);
+
+      if (isProctorEnabled && settings.displaySurface !== 'monitor') {
+        screenTrack.stop();
+        addAlert('Proctor mode requires sharing the entire screen, not a specific tab or window.', 'error');
+        return;
       }
 
       Object.values(peersRef.current).forEach((peer) => {
-        const sender = peer._pc.getSenders().find((s) => s.track?.kind === 'video');
-        if (sender) {
-          sender.replaceTrack(cameraTrack);
-          logDebug(`Replaced video track with camera for peer ${peer._id || 'unknown'}`);
+        const senders = peer._pc.getSenders();
+        const screenSender = senders.find((s) => s.track?._type === 'screen');
+        if (screenSender) {
+          screenSender.replaceTrack(screenTrack).catch((err) => {
+            logDebug(`Error replacing screen track for peer ${peer._id || 'unknown'}: ${err.message}`);
+            addAlert('Failed to share screen.', 'error');
+          });
+          logDebug(`Replaced screen track for peer ${peer._id || 'unknown'}`);
+        } else {
+          peer._pc.addTrack(screenTrack, screenStream);
+          logDebug(`Added new screen track to peer ${peer._id || 'unknown'}`);
         }
+        renegotiatePeer(peer, peer._id);
       });
 
-      const assignCameraStream = (attempt = 1) => {
-        if (userVideoRef.current) {
-          userVideoRef.current.srcObject = cameraStream;
-          userVideoRef.current.play().catch((err) => {
-            logDebug(`Error playing camera stream: ${err.message}`);
-            addAlert('Failed to play camera stream.', 'error');
+      setScreenStream(screenStream);
+      setIsScreenSharing(true);
+      addAlert(isProctorEnabled ? 'Screen sharing started (entire screen).' : 'Screen sharing started.', 'success');
+
+      // Retry sending screen-share-status
+      const sendScreenShareStatus = (attempt = 1) => {
+        if (socketRef.current?.connected) {
+          socketRef.current.emit('screen-share-status', {
+            roomId,
+            userName,
+            isScreenSharing: true,
           });
-          logDebug('Camera stream assigned to local video element.');
-        } else if (attempt <= 10) {
-          logDebug(`Retrying camera stream assignment (${attempt}/10)...`);
-          setTimeout(() => assignCameraStream(attempt + 1), 1000);
+          logDebug(`Sent screen-share-status (start) to room ${roomId}`);
+        } else if (attempt <= 5) {
+          logDebug(`Socket not connected, retrying screen-share-status (start) (${attempt}/5)...`);
+          setTimeout(() => sendScreenShareStatus(attempt + 1), 1000);
         } else {
-          logDebug('Failed to assign camera stream after 10 attempts');
-          addAlert('Failed to assign camera stream.', 'error');
+          logDebug(`Failed to send screen-share-status (start) after 5 attempts`);
+          addAlert('Failed to notify others of screen sharing start.', 'error');
         }
       };
-      assignCameraStream();
+      sendScreenShareStatus();
 
-      setLocalStream(cameraStream);
-      setIsScreenSharing(false);
-      addAlert('Reverted to camera.', 'success');
+      screenTrack.onended = () => {
+        logDebug('Screen sharing stopped by user.');
+        addAlert('Screen sharing stopped.', 'info');
+        stopScreenShare();
+      };
     } catch (err) {
-      logDebug(`Error reverting to camera: ${err.message}`);
-      addAlert('Failed to revert to camera. Check permissions.', 'error');
+      logDebug(`Error starting screen share: ${err.message}`);
+      if (err.name === 'NotAllowedError') {
+        addAlert('Screen sharing permission denied.', 'error');
+      } else if (err.name === 'NotSupportedError') {
+        addAlert('Browser does not support entire screen sharing. Use Chrome or Edge.', 'error');
+      } else {
+        addAlert('Failed to start screen sharing.', 'error');
+      }
     }
-  };
+  } else {
+    stopScreenShare();
+  }
+};
+
+const stopScreenShare = async () => {
+  if (screenStream) {
+    screenStream.getTracks().forEach((track) => track.stop());
+    setScreenStream(null);
+    setIsScreenSharing(false);
+    addAlert('Screen sharing stopped.', 'info');
+
+    Object.values(peersRef.current).forEach((peer) => {
+      const sender = peer._pc.getSenders().find((s) => s.track?._type === 'screen');
+      if (sender) {
+        sender.replaceTrack(null).catch((err) => {
+          logDebug(`Error removing screen track for peer ${peer._id || 'unknown'}: ${err.message}`);
+          addAlert('Failed to stop screen sharing.', 'error');
+        });
+        logDebug(`Removed screen track for peer ${peer._id || 'unknown'}`);
+        renegotiatePeer(peer, peer._id);
+      }
+    });
+
+    if (userVideoRef.current?.screen) {
+      userVideoRef.current.screen.srcObject = null;
+    }
+
+    // Retry sending screen-share-status
+    const sendScreenShareStatus = (attempt = 1) => {
+      if (socketRef.current?.connected) {
+        socketRef.current.emit('screen-share-status', {
+          roomId,
+          userName,
+          isScreenSharing: false,
+        });
+        logDebug(`Sent screen-share-status (stop) to room ${roomId}`);
+      } else if (attempt <= 5) {
+        logDebug(`Socket not connected, retrying screen-share-status (stop) (${attempt}/5)...`);
+        setTimeout(() => sendScreenShareStatus(attempt + 1), 1000);
+      } else {
+        logDebug(`Failed to send screen-share-status (stop) after 5 attempts`);
+        addAlert('Failed to notify others of screen sharing stop.', 'error');
+      }
+    };
+    sendScreenShareStatus();
+  }
+};
+
 
   const createPeer = (userId, initiator) => {
     logDebug(`Creating peer for ${userId}, initiator: ${initiator}`);
@@ -500,61 +774,130 @@ const Video = () => {
       },
     });
 
+    peer._id = userId; 
+
+    if (screenStream) {
+      const screenTrack = screenStream.getVideoTracks()[0];
+      peer._pc.addTrack(screenTrack, screenStream);
+      logDebug(`Added screen share track to new peer ${userId}`);
+    }
+
+    
+    const assignPeerStream = (userId, streamType, singleTrackStream, attempt = 1) => {
+      const videoElement = peerVideoRefs.current[userId]?.[streamType];
+      if (videoElement && !videoElement.srcObject) { // Only assign if empty
+        videoElement.srcObject = singleTrackStream;
+        videoElement.play().catch((err) => {
+          logDebug(`Error playing ${streamType} stream for ${userId}: ${err.message}`);
+          addAlert(`Failed to play ${streamType} stream for ${connectionStatus[userId]?.userName || shortId(userId)}.`, 'error');
+        });
+        logDebug(`Assigned ${streamType} stream to video element for ${userId}`);
+        setConnectionStatus((prev) => ({
+          ...prev,
+          [userId]: {
+            ...prev[userId],
+            status: 'connected',
+            streams: { ...prev[userId]?.streams, [streamType]: true },
+          },
+        }));
+        // Clear pending for this type
+        pendingRemoteStreams.current[userId][streamType] = null;
+      } else if (attempt <= 20 && !videoElement) { // Increased retries for slow renders
+        logDebug(`Video element for ${userId} (${streamType}) not ready, retrying (${attempt}/20)...`);
+        setTimeout(() => assignPeerStream(userId, streamType, singleTrackStream, attempt + 1), 500); // Slower retry to avoid spam
+      } else if (videoElement && videoElement.srcObject && attempt === 1) {
+        logDebug(`Video element for ${userId} (${streamType}) already has stream, skipping assignment`);
+      } else {
+        logDebug(`Failed to assign ${streamType} stream for ${userId} after 20 attempts`);
+        addAlert(`Failed to assign ${streamType} stream for ${connectionStatus[userId]?.userName || shortId(userId)}. Check browser console.`, 'error');
+      }
+    };
+
     peer.on('signal', (signal) => {
       setTimeout(() => {
         if (signal.type === 'offer') {
           socketRef.current.emit('offer', { signal, to: userId });
+          logDebug(`Sent offer to ${userId}: ${JSON.stringify(signal).slice(0, 100)}...`);
         } else if (signal.type === 'answer') {
           socketRef.current.emit('answer', { signal, to: userId });
+          logDebug(`Sent answer to ${userId}`);
         } else if (signal.candidate) {
           socketRef.current.emit('ice-candidate', { candidate: signal.candidate, to: userId });
+          logDebug(`Sent ICE candidate to ${userId}`);
         }
       }, 100);
     });
 
     peer.on('stream', (stream) => {
-      logDebug(`Received stream from ${userId}, tracks: ${stream.getTracks().map((t) => `${t.kind}:${t.enabled}`).join(', ')}`);
-      peersRef.current[userId].remoteStream = stream;
-      const assignPeerStream = (attempt = 1) => {
-        if (peerVideoRefs.current[userId]) {
-          peerVideoRefs.current[userId].srcObject = stream;
-          peerVideoRefs.current[userId].play().catch((err) => {
-            logDebug(`Error playing video for ${userId}: ${err.message}`);
-            addAlert(`Failed to play video for ${connectionStatus[userId]?.userName || shortId(userId)}.`, 'error');
-          });
-          logDebug(`Stream assigned to video element for ${userId}`);
-          setConnectionStatus((prev) => ({ ...prev, [userId]: 'connected' }));
-        } else if (attempt <= 15) {
-          logDebug(`Video element for ${userId} not ready, retrying (${attempt}/15)...`);
-          setTimeout(() => assignPeerStream(attempt + 1), 1000);
-        } else {
-          logDebug(`Failed to assign stream for ${userId} after 15 attempts`);
-          addAlert(`Failed to assign video stream for ${connectionStatus[userId]?.userName || shortId(userId)}.`, 'error');
-          setConnectionStatus((prev) => ({ ...prev, [userId]: 'failed' }));
+      logDebug(`Received stream from ${userId}, tracks: ${stream.getTracks().map((t) => `${t.kind}:${t.label || t.id} (settings: ${JSON.stringify(t.getSettings ? t.getSettings() : 'N/A')})`).join(', ')}`);
+      if (!peersRef.current[userId]) {
+        peersRef.current[userId] = { remoteStreams: {} };
+      }
+      pendingRemoteStreams.current[userId] = pendingRemoteStreams.current[userId] || { camera: null, screen: null };
+
+      if (!videoStreamCount.current[userId]) videoStreamCount.current[userId] = 0;
+
+      stream.getTracks().forEach((track) => {
+        if (track.kind !== 'video') return; // Ignore audio
+
+        videoStreamCount.current[userId]++;
+
+        // Robust classification
+        const settings = track.getSettings ? track.getSettings() : {};
+        let isScreen = (
+          track._type === 'screen' || // Explicit tag (preferred)
+          settings.displaySurface || // Screen tracks have this (e.g., 'monitor', 'window')
+          track.label?.toLowerCase().includes('screen') ||
+          track.id.includes('screen') ||
+          // Fallback: High res + no facingMode (cameras often have facingMode: 'user')
+          (settings.width >= 1280 && settings.height >= 720 && !settings.facingMode)
+        );
+
+        if (!isScreen && videoStreamCount.current[userId] > 1) {
+          isScreen = true;
         }
-      };
-      assignPeerStream();
+
+        const streamType = isScreen ? 'screen' : 'camera';
+        logDebug(`Classified track ${track.id} as '${streamType}' (displaySurface: ${settings.displaySurface}, label: ${track.label}, facingMode: ${settings.facingMode}, streamCount: ${videoStreamCount.current[userId]})`);
+
+        // Create single-track stream
+        const singleTrackStream = new MediaStream([track]);
+        pendingRemoteStreams.current[userId][streamType] = singleTrackStream;
+
+        // Assign stream with retry
+        assignPeerStream(userId, streamType, singleTrackStream);
+      });
+
+     
+      setTimeout(() => {
+        if (pendingRemoteStreams.current[userId]) {
+          Object.keys(pendingRemoteStreams.current[userId]).forEach(type => {
+            if (pendingRemoteStreams.current[userId][type] && peerVideoRefs.current[userId]?.[type]) {
+              assignPeerStream(userId, type, pendingRemoteStreams.current[userId][type]); 
+            }
+          });
+        }
+      }, 1000);
     });
 
     peer.on('connect', () => {
       logDebug(`Peer connection established with ${userId}`);
-      setConnectionStatus((prev) => ({ ...prev, [userId]: 'connected' }));
+      setConnectionStatus((prev) => ({ ...prev, [userId]: { ...prev[userId], status: 'connected' } }));
       addAlert(`Connected to ${connectionStatus[userId]?.userName || shortId(userId)}.`, 'success');
     });
     peer.on('error', (err) => {
       logDebug(`Peer error (${userId}): ${err.message}`);
-      setConnectionStatus((prev) => ({ ...prev, [userId]: 'failed' }));
+      setConnectionStatus((prev) => ({ ...prev, [userId]: { ...prev[userId], status: 'failed' } }));
       addAlert(`Connection error with ${connectionStatus[userId]?.userName || shortId(userId)}.`, 'error');
     });
     peer.on('close', () => {
       logDebug(`Peer connection closed for ${userId}`);
-      setConnectionStatus((prev) => ({ ...prev, [userId]: 'disconnected' }));
+      setConnectionStatus((prev) => {
+        const newStatus = { ...prev };
+        delete newStatus[userId];
+        return newStatus;
+      });
       addAlert(`${connectionStatus[userId]?.userName || shortId(userId)} disconnected.`, 'info');
-    });
-    peer.on('iceconnectionstatechange', () => {
-      const state = peer._pc.iceConnectionState;
-      logDebug(`ICE connection state for ${userId}: ${state}`);
-      setConnectionStatus((prev) => ({ ...prev, [userId]: state }));
     });
 
     peersRef.current[userId] = peer;
@@ -570,15 +913,27 @@ const Video = () => {
 
   const handleUserJoined = (userId, userName, isUserHost) => {
     logDebug(`User joined: ${userId} (${userName}), isHost: ${isUserHost}, current peers: ${Object.keys(peersRef.current)}`);
-    setConnectionStatus((prev) => ({ ...prev, [userId]: { status: 'connecting', userName, isHost: isUserHost } }));
+    setConnectionStatus((prev) => ({
+      ...prev,
+      [userId]: { status: 'connecting', userName, isHost: isUserHost, streams: { camera: true, screen: false } },
+    }));
     setParticipantControls((prev) => ({ ...prev, [userId]: { video: true, audio: true, proctor: false } }));
     const peer = createPeer(userId, true);
     setPeers((prev) => ({ ...prev, [userId]: peer }));
-    addAlert(`${userName} joined the room.`, 'info');
+    addAlert(`${userName} joined the meeting.`, 'info');
+
+    // If currently screen sharing, notify the new user
+    if (isScreenSharing) {
+      socketRef.current.emit('screen-share-status', {
+        roomId,
+        userName,
+        isScreenSharing: true,
+      });
+    }
   };
 
   const handleOffer = (data) => {
-    logDebug(`Received offer from ${data.from}`);
+    logDebug(`Received offer from ${data.from}: ${JSON.stringify(data.signal).slice(0, 100)}...`);
     let peer = peersRef.current[data.from];
     if (!peer) {
       peer = createPeer(data.from, false);
@@ -633,6 +988,9 @@ const Video = () => {
       clearInterval(detectionIntervals.current[userId]);
       delete detectionIntervals.current[userId];
     }
+    if (pendingRemoteStreams.current[userId]) {
+      delete pendingRemoteStreams.current[userId];
+    }
     if (peersRef.current[userId]) {
       peersRef.current[userId].destroy();
       delete peersRef.current[userId];
@@ -642,11 +1000,12 @@ const Video = () => {
         return newPeers;
       });
       if (peerVideoRefs.current[userId]) {
-        peerVideoRefs.current[userId].srcObject = null;
+        if (peerVideoRefs.current[userId].camera) peerVideoRefs.current[userId].camera.srcObject = null;
+        if (peerVideoRefs.current[userId].screen) peerVideoRefs.current[userId].screen.srcObject = null;
         delete peerVideoRefs.current[userId];
       }
     }
-    addAlert(`${userName} left the room.`, 'info');
+    addAlert(`${userName} left the meeting.`, 'info');
   };
 
   const handleChatMessage = (data) => {
@@ -672,8 +1031,51 @@ const Video = () => {
           if (videoTrack) {
             videoTrack.enabled = data.video;
             setIsVideoOn(data.video);
-            logDebug(`Video track set to ${data.video ? 'enabled' : 'disabled'} by host`);
-            addAlert(`Video ${data.video ? 'enabled' : 'disabled'} by host.`, 'info');
+            logDebug(`Camera track set to ${data.video ? 'enabled' : 'disabled'} by host`);
+            addAlert(`Camera ${data.video ? 'enabled' : 'disabled'} by host.`, 'info');
+
+            Object.values(peersRef.current).forEach((peer) => {
+              const sender = peer._pc.getSenders().find((s) => s.track?.kind === 'video' && !s.track.label?.toLowerCase().includes('screen'));
+              if (sender) {
+                sender.replaceTrack(data.video ? videoTrack : null).catch((err) => {
+                  logDebug(`Error updating camera track for peer ${peer._id || 'unknown'}: ${err.message}`);
+                  addAlert('Failed to update camera stream.', 'error');
+                });
+                renegotiatePeer(peer, peer._id);
+              }
+            });
+          } else if (data.video) {
+            navigator.mediaDevices.getUserMedia({ video: true, audio: isAudioOn })
+              .then((newStream) => {
+                const newVideoTrack = newStream.getVideoTracks()[0];
+                setLocalStream(newStream);
+                setIsVideoOn(true);
+                logDebug('Reacquired camera stream for host toggle.');
+                addAlert('Camera stream reacquired.', 'success');
+
+                Object.values(peersRef.current).forEach((peer) => {
+                  const sender = peer._pc.getSenders().find((s) => s.track?.kind === 'video' && !s.track.label?.toLowerCase().includes('screen'));
+                  if (sender) {
+                    sender.replaceTrack(newVideoTrack).catch((err) => {
+                      logDebug(`Error replacing new camera track for peer ${peer._id || 'unknown'}: ${err.message}`);
+                      addAlert('Failed to update camera stream.', 'error');
+                    });
+                    renegotiatePeer(peer, peer._id);
+                  }
+                });
+
+                if (userVideoRef.current?.camera) {
+                  userVideoRef.current.camera.srcObject = newStream;
+                  userVideoRef.current.camera.play().catch((err) => {
+                    logDebug(`Error playing reacquired camera stream: ${err.message}`);
+                    addAlert('Failed to play reacquired camera stream.', 'error');
+                  });
+                }
+              })
+              .catch((err) => {
+                logDebug(`Error reacquiring camera stream: ${err.message}`);
+                addAlert('Failed to reacquire camera stream.', 'error');
+              });
           }
         }
         if (data.audio !== undefined) {
@@ -723,6 +1125,11 @@ const Video = () => {
           'info'
         );
       } else if (type === 'proctor') {
+        socketRef.current.emit('toggle-proctor', {
+          roomId,
+          userId,
+          proctor: newControls[userId].proctor,
+        });
         logDebug(`Host toggled proctor for ${userId} to ${newControls[userId][type]}`);
         addAlert(
           `Proctor mode ${newControls[userId][type] ? 'enabled' : 'disabled'} for ${
@@ -734,8 +1141,6 @@ const Video = () => {
       return newControls;
     });
   };
-
-  const shortId = (id) => id.slice(0, 8);
 
   return (
     <ErrorBoundary>
@@ -752,125 +1157,236 @@ const Video = () => {
         </div>
         {!inRoom ? (
           <div className="join-room">
+            <h2>Start or Join a Meeting</h2>
             <input
               type="text"
               value={userName}
               onChange={(e) => setUserName(e.target.value)}
-              placeholder="Enter your username"
+              placeholder="Enter your name"
             />
             <input
               type="text"
               value={roomId}
               onChange={(e) => setRoomId(e.target.value)}
-              placeholder="Enter Room ID"
+              placeholder="Enter meeting ID (optional)"
             />
-            <button onClick={joinRoom}>Join Room</button>
-            <button onClick={createRoom}>Create Room</button>
+            <div className="join-buttons">
+              <button onClick={joinRoom}>Join Meeting</button>
+              <button onClick={createRoom}>Start Meeting</button>
+            </div>
           </div>
         ) : (
           <div className="conference-room">
-            <header>
-              <h2>Room: {roomId} {isHost ? '(Host)' : ''}</h2>
+            <header className="top-bar">
+              <div className="meeting-info">
+                <h2>Meeting: {roomId} {isHost ? '(Host)' : ''}</h2>
+                <span>{Object.keys(peers).length + 1} participant(s)</span>
+              </div>
+              <div className="top-controls">
+                <button onClick={() => setShowChat(!showChat)} title={showChat ? 'Hide Chat' : 'Show Chat'}>
+                  <i className="fas fa-comment"></i>
+                </button>
+                <button onClick={() => setShowDebug(!showDebug)} title={showDebug ? 'Hide Debug' : 'Show Debug'}>
+                  <i className="fas fa-bug"></i>
+                </button>
+              </div>
             </header>
-            <div className="controls">
-              <button onClick={toggleVideo} disabled={isHost ? false : !isVideoOn}>
-                {isVideoOn ? 'Turn Video Off' : 'Turn Video On'}
-              </button>
-              <button onClick={toggleAudio} disabled={isHost ? false : !isAudioOn}>
-                {isAudioOn ? 'Mute Audio' : 'Unmute Audio'}
-              </button>
-              <button onClick={toggleScreenShare}>
-                {isScreenSharing ? 'Stop Screen Share' : 'Share Screen'}
-              </button>
-              <button onClick={() => setShowDebug(!showDebug)}>
-                {showDebug ? 'Hide Debug' : 'Show Debug'}
-              </button>
-            </div>
             <div className="main-content">
               <div className="video-container">
-                <div className="video-item">
-                  <video
-                    ref={userVideoRef}
-                    autoPlay
-                    muted
-                    playsInline
-                    className="video-element"
-                  />
-                  <div className="video-label">You ({userName})</div>
-                </div>
-                {Object.keys(peers).map((userId) => (
-                  <div className="video-item" key={userId}>
-                    <video
-                      ref={(el) => {
-                        if (el && !peerVideoRefs.current[userId]) {
-                          peerVideoRefs.current[userId] = el;
-                          logDebug(`Peer video ref assigned for ${userId}: ${!!el}`);
-                          if (peersRef.current[userId]?.remoteStream) {
-                            el.srcObject = peersRef.current[userId].remoteStream;
-                            el.play().catch((err) => {
-                              logDebug(`Error playing video for ${userId}: ${err.message}`);
-                              addAlert(`Failed to play video for ${connectionStatus[userId]?.userName || shortId(userId)}.`, 'error');
-                            });
-                          }
-                        }
-                      }}
-                      autoPlay
-                      playsInline
-                      className="video-element"
-                    />
-                    <div className="video-label">
-                      {connectionStatus[userId]?.userName || `Peer: ${shortId(userId)}`} ({connectionStatus[userId]?.status || 'connecting'})
-                      {isHost && (
-                        <div className="proctor-controls">
-                          <button
-                            onClick={() => toggleParticipantMedia(userId, 'video')}
-                          >
-                            {participantControls[userId]?.video ? 'Disable Video' : 'Enable Video'}
-                          </button>
-                          <button
-                            onClick={() => toggleParticipantMedia(userId, 'audio')}
-                          >
-                            {participantControls[userId]?.audio ? 'Disable Audio' : 'Enable Audio'}
-                          </button>
-                          <button
-                            onClick={() => toggleParticipantMedia(userId, 'proctor')}
-                            className={participantControls[userId]?.proctor ? 'proctor-enabled' : ''}
-                          >
-                            {participantControls[userId]?.proctor ? 'Disable Proctor' : 'Enable Proctor'}
-                          </button>
+                <div className="video-gallery">
+                  <div className="video-item local-video">
+                    <div className="video-wrapper">
+                      <video
+                        ref={(el) => {
+                          userVideoRef.current.camera = el;
+                        }}
+                        autoPlay
+                        muted
+                        playsInline
+                        className="video-element"
+                      />
+                      <div className="video-overlay">
+                        <span className="video-name">You ({userName}) - Camera</span>
+                        <div className="video-status">
+                          {isVideoOn ? <i className="fas fa-video"></i> : <i className="fas fa-video-slash"></i>}
+                          {isAudioOn ? <i className="fas fa-microphone"></i> : <i className="fas fa-microphone-slash"></i>}
                         </div>
-                      )}
+                      </div>
                     </div>
+                    {isScreenSharing && (
+                      <div className="video-wrapper">
+                        <video
+                          ref={(el) => {
+                            userVideoRef.current.screen = el;
+                          }}
+                          autoPlay
+                          muted
+                          playsInline
+                          className="video-element"
+                        />
+                        <div className="video-overlay">
+                          <span className="video-name">You ({userName}) - Screen</span>
+                          <div className="video-status">
+                            <i className="fas fa-desktop"></i>
+                          </div>
+                        </div>
+                      </div>
+                    )}
                   </div>
-                ))}
-              </div>
-              <div className="chat-container">
-                <h3>Live Chat</h3>
-                <div className="chat-messages" ref={chatRef}>
-                  {messages.map((msg, index) => (
-                    <div key={index} className={`chat-message ${msg.from === socketRef.current.id ? 'own-message' : ''}`}>
-                      <span className="chat-sender">
-                        {msg.from === socketRef.current.id ? 'You' : msg.userName}
-                      </span>
-                      <span className="chat-time">[{msg.time}]</span>: {msg.message}
-                    </div>
-                  ))}
+                  
+{Object.keys(peers).map((userId) => (
+  <div className="video-item" key={userId}>
+    <div className="video-wrapper">
+      <video
+        ref={(el) => {
+          if (el) {
+            peerVideoRefs.current[userId] = { ...peerVideoRefs.current[userId], camera: el };
+            if (peersRef.current[userId]?.remoteStreams?.camera) {
+              el.srcObject = peersRef.current[userId].remoteStreams.camera;
+              el.play().catch((err) => {
+                logDebug(`Error playing camera stream for ${userId}: ${err.message}`);
+                addAlert(`Failed to play camera stream for ${connectionStatus[userId]?.userName || shortId(userId)}.`, 'error');
+              });
+            }
+          }
+        }}
+        autoPlay
+        playsInline
+        className="video-element"
+      />
+      <div className="video-overlay">
+        <span className="video-name">
+          {connectionStatus[userId]?.userName || `Participant (${shortId(userId)})`} - Camera
+        </span>
+        <div className="video-status">
+          <span>{connectionStatus[userId]?.status || 'connecting'}</span>
+          {isHost && (
+            <div className="proctor-controls">
+              <button
+                onClick={() => toggleParticipantMedia(userId, 'video')}
+                className={!participantControls[userId]?.video ? 'disabled' : ''}
+                title={participantControls[userId]?.video ? 'Turn off video' : 'Turn on video'}
+              >
+                <i className={participantControls[userId]?.video ? 'fas fa-video' : 'fas fa-video-slash'}></i>
+              </button>
+              <button
+                onClick={() => toggleParticipantMedia(userId, 'audio')}
+                className={!participantControls[userId]?.audio ? 'disabled' : ''}
+                title={participantControls[userId]?.audio ? 'Mute' : 'Unmute'}
+              >
+                <i className={participantControls[userId]?.audio ? 'fas fa-microphone' : 'fas fa-microphone-slash'}></i>
+              </button>
+              <button
+                onClick={() => toggleParticipantMedia(userId, 'proctor')}
+                className={participantControls[userId]?.proctor ? 'proctor-enabled' : ''}
+                title={participantControls[userId]?.proctor ? 'Disable proctor' : 'Enable proctor'}
+              >
+                <i className={participantControls[userId]?.proctor ? 'fas fa-user-check' : 'fas fa-user'}></i>
+              </button>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+    {connectionStatus[userId]?.streams?.screen && (
+      <div className="video-wrapper">
+        <video
+          ref={(el) => {
+            if (el) {
+              peerVideoRefs.current[userId] = { ...peerVideoRefs.current[userId], screen: el };
+              if (peersRef.current[userId]?.remoteStreams?.screen) {
+                el.srcObject = peersRef.current[userId].remoteStreams.screen;
+                el.play().catch((err) => {
+                  logDebug(`Error playing screen stream for ${userId}: ${err.message}`);
+                  addAlert(`Failed to play screen stream for ${connectionStatus[userId]?.userName || shortId(userId)}.`, 'error');
+                });
+              } else if (pendingRemoteStreams.current[userId]?.screen) {
+                el.srcObject = pendingRemoteStreams.current[userId].screen;
+                el.play().catch((err) => {
+                  logDebug(`Error playing pending screen stream for ${userId}: ${err.message}`);
+                  addAlert(`Failed to play screen stream for ${connectionStatus[userId]?.userName || shortId(userId)}.`, 'error');
+                });
+              }
+            }
+          }}
+          autoPlay
+          playsInline
+          className="video-element"
+        />
+        <div className="video-overlay">
+          <span className="video-name">
+            {connectionStatus[userId]?.userName || `Participant (${shortId(userId)})`} - Screen
+          </span>
+          <div className="video-status">
+            <i className="fas fa-desktop"></i>
+          </div>
+        </div>
+      </div>
+    )}
+  </div>
+))}
                 </div>
-                <div className="chat-input">
-                  <input
-                    type="text"
-                    value={chatInput}
-                    onChange={(e) => setChatInput(e.target.value)}
-                    placeholder="Type a message..."
-                    onKeyPress={(e) => e.key === 'Enter' && sendChatMessage()}
-                  />
-                  <button onClick={sendChatMessage}>Send</button>
+              </div>
+              <div className={`side-panel ${showChat ? 'open' : ''}`}>
+                <div className="chat-container">
+                  <div className="chat-header">
+                    <h3>Chat</h3>
+                    <button onClick={() => setShowChat(false)} title="Close chat"><i className="fas fa-times"></i></button>
+                  </div>
+                  <div className="chat-messages" ref={chatRef}>
+                    {messages.map((msg, index) => (
+                      <div key={index} className={`chat-message ${msg.from === socketRef.current.id ? 'own-message' : ''}`}>
+                        <div className="chat-meta">
+                          <span className="chat-sender">{msg.from === socketRef.current.id ? 'You' : msg.userName}</span>
+                          <span className="chat-time">{msg.time}</span>
+                        </div>
+                        <div className="chat-text">{msg.message}</div>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="chat-input">
+                    <input
+                      type="text"
+                      value={chatInput}
+                      onChange={(e) => setChatInput(e.target.value)}
+                      placeholder="Type a message..."
+                      onKeyPress={(e) => e.key === 'Enter' && sendChatMessage()}
+                    />
+                    <button onClick={sendChatMessage} title="Send message"><i className="fas fa-paper-plane"></i></button>
+                  </div>
                 </div>
               </div>
             </div>
+            <footer className="bottom-bar">
+              <div className="controls">
+                <button
+                  onClick={toggleVideo}
+                  disabled={isHost ? false : !isVideoOn}
+                  className={isVideoOn ? '' : 'disabled'}
+                  title={isVideoOn ? 'Turn off camera' : 'Turn on camera'}
+                >
+                  <i className={isVideoOn ? 'fas fa-video' : 'fas fa-video-slash'}></i>
+                </button>
+                <button
+                  onClick={toggleAudio}
+                  disabled={isHost ? false : !isAudioOn}
+                  className={isAudioOn ? '' : 'disabled'}
+                  title={isAudioOn ? 'Mute' : 'Unmute'}
+                >
+                  <i className={isAudioOn ? 'fas fa-microphone' : 'fas fa-microphone-slash'}></i>
+                </button>
+                <button
+                  onClick={toggleScreenShare}
+                  className={isScreenSharing ? 'sharing' : ''}
+                  title={isScreenSharing ? 'Stop sharing' : 'Share screen'}
+                >
+                  <i className={isScreenSharing ? 'fas fa-desktop' : 'fas fa-share-square'}></i>
+                </button>
+              </div>
+            </footer>
             {showDebug && (
-              <div className="debug">
-                <h4>Debug Log:</h4>
+              <div className="debug-panel">
+                <h4>Debug Log</h4>
                 <ul>
                   {debugLog.map((log, index) => (
                     <li key={index}>{log}</li>
@@ -881,251 +1397,549 @@ const Video = () => {
           </div>
         )}
         <style>
-          {`
-            .app-container {
-              font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-              max-width: 1400px;
-              margin: 0 auto;
-              padding: 20px;
-              background: #f5f6f5;
-              position: relative;
+          {`:root {
+              --primary-bg: #1a1a2e;
+              --secondary-bg: #16213e;
+              --accent-blue: #00b7eb;
+              --accent-purple: #6b48ff;
+              --text-color: #e0e0e0;
+              --error: #ff4d4d;
+              --success: #00cc69;
+              --warning: #ffaa00;
+              --info: #00b7eb;
+              --border: #2e2e4b;
             }
+
+            * {
+              margin: 0;
+              padding: 0;
+              box-sizing: border-box;
+            }
+
+            .app-container {
+              font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+              height: 100vh;
+              display: flex;
+              flex-direction: column;
+              background: var(--primary-bg);
+              color: var(--text-color);
+              overflow: hidden;
+            }
+
+            .error-message {
+              display: flex;
+              align-items: center;
+              justify-content: center;
+              height: 100%;
+              font-size: 18px;
+              color: var(--error);
+            }
+
             .alert-container {
               position: fixed;
-              top: 20px;
-              right: 20px;
-              z-index: 1000;
-              max-width: 400px;
-              width: 100%;
+              top: 16px;
+              right: 16px;
+              z-index: 2000;
+              max-width: 320px;
+              width: 90%;
             }
+
             .alert {
-              padding: 12px 16px;
-              margin-bottom: 10px;
+              padding: 10px 14px;
+              margin-bottom: 8px;
               border-radius: 6px;
-              color: white;
+              color: var(--text-color);
               display: flex;
               justify-content: space-between;
               align-items: center;
-              animation: slideIn 0.3s ease-in-out;
-              box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+              box-shadow: 0 2px 6px rgba(0,0,0,0.3);
+              animation: fadeIn 0.3s ease-in-out;
+              font-size: 13px;
+              background: var(--secondary-bg);
+              border: 1px solid var(--border);
             }
-            .alert-error {
-              background-color: #dc3545;
-            }
-            .alert-success {
-              background-color: #28a745;
-            }
-            .alert-info {
-              background-color: #17a2b8;
-            }
-            .alert-warning {
-              background-color: #ffc107;
-              color: #333;
-            }
+
+            .alert-error { border-color: var(--error); }
+            .alert-success { border-color: var(--success); }
+            .alert-info { border-color: var(--info); }
+            .alert-warning { border-color: var(--warning); }
+
             .alert-close {
               background: none;
               border: none;
-              color: white;
-              font-size: 16px;
+              color: var(--text-color);
+              font-size: 14px;
               cursor: pointer;
               padding: 0 8px;
+              opacity: 0.7;
             }
+
             .alert-close:hover {
-              color: #ddd;
+              opacity: 1;
             }
-            @keyframes slideIn {
-              from {
-                transform: translateX(100%);
-                opacity: 0;
-              }
-              to {
-                transform: translateX(0);
-                opacity: 1;
-              }
+
+            @keyframes fadeIn {
+              from { opacity: 0; transform: translateY(-10px); }
+              to { opacity: 1; transform: translateY(0); }
             }
-            header {
-              text-align: center;
-              margin-bottom: 20px;
-              color: #333;
-            }
+
             .join-room {
-              display: flex;
-              justify-content: center;
-              gap: 10px;
-              margin-bottom: 20px;
-              flex-wrap: wrap;
-            }
-            .join-room input, .chat-input input {
-              padding: 12px;
-              border: 1px solid #ccc;
-              border-radius: 6px;
-              flex: 1;
-              min-width: 200px;
-              font-size: 16px;
-              transition: border-color 0.3s;
-            }
-            .join-room input:focus, .chat-input input:focus {
-              border-color: #007bff;
-              outline: none;
-            }
-            .controls {
-              display: flex;
-              justify-content: center;
-              gap: 12px;
-              margin-bottom: 20px;
-              flex-wrap: wrap;
-            }
-            .controls button, .join-room button, .chat-input button, .proctor-controls button {
-              padding: 12px 24px;
-              background-color: #007bff;
-              color: white;
-              border: none;
-              border-radius: 6px;
-              cursor: pointer;
-              transition: background-color 0.3s, transform 0.2s;
-              font-size: 16px;
-            }
-            .controls button:hover, .join-room button:hover, .chat-input button:hover, .proctor-controls button:hover {
-              background-color: #0056b3;
-              transform: translateY(-2px);
-            }
-            .controls button:disabled, .proctor-controls button:disabled {
-              background-color: #cccccc;
-              cursor: not-allowed;
-              transform: none;
-            }
-            .proctor-controls button.proctor-enabled {
-              background-color: #28a745;
-            }
-            .proctor-controls button.proctor-enabled:hover {
-              background-color: #218838;
-            }
-            .main-content {
-              display: flex;
-              gap: 20px;
-              flex-direction: row;
-            }
-            .video-container {
-              flex: 3;
-              display: grid;
-              grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
-              gap: 20px;
-            }
-            .video-item {
               display: flex;
               flex-direction: column;
               align-items: center;
-              background: #fff;
-              padding: 12px;
-              border-radius: 8px;
-              box-shadow: 0 4px 8px rgba(0,0,0,0.1);
-              transition: transform 0.2s;
+              justify-content: center;
+              height: 100%;
+              gap: 16px;
+              padding: 24px;
+              background: var(--secondary-bg);
+              border-radius: 12px;
+              box-shadow: 0 4px 20px rgba(0,0,0,0.4);
+              max-width: 360px;
+              margin: auto;
             }
-            .video-item:hover {
-              transform: translateY(-4px);
-            }
-            .video-element {
-              width: 100%;
-              height: auto;
-              border: 1px solid #ddd;
-              background: #000;
-              border-radius: 8px;
-              max-height: 240px;
-              object-fit: cover;
-            }
-            .video-label {
-              margin-top: 8px;
+
+            .join-room h2 {
+              font-size: 22px;
               font-weight: 600;
-              color: #333;
-              font-size: 14px;
-              text-align: center;
+              margin-bottom: 20px;
+              color: var(--text-color);
             }
-            .proctor-controls {
-              margin-top: 8px;
+
+            .join-room input {
+              width: 100%;
+              padding: 12px;
+              border: 1px solid var(--border);
+              border-radius: 6px;
+              font-size: 14px;
+              background: #24244a;
+              color: var(--text-color);
+              transition: border-color 0.2s;
+            }
+
+            .join-room input:focus {
+              border-color: var(--accent-blue);
+              outline: none;
+            }
+
+            .join-buttons {
+              display: flex;
+              gap: 12px;
+              width: 100%;
+            }
+
+            .join-buttons button {
+              flex: 1;
+              padding: 12px;
+              border: none;
+              border-radius: 6px;
+              cursor: pointer;
+              font-size: 14px;
+              color: var(--text-color);
+              background: linear-gradient(135deg, var(--accent-blue), var(--accent-purple));
+              transition: opacity 0.2s;
+            }
+
+            .join-buttons button:hover {
+              opacity: 0.9;
+            }
+
+            .conference-room {
+              display: flex;
+              flex-direction: column;
+              height: 100%;
+            }
+
+            .top-bar {
+              display: flex;
+              justify-content: space-between;
+              align-items: center;
+              padding: 12px 20px;
+              background: var(--secondary-bg);
+              border-bottom: 1px solid var(--border);
+            }
+
+            .meeting-info {
+              display: flex;
+              flex-direction: column;
+              gap: 4px;
+            }
+
+            .meeting-info h2 {
+              font-size: 16px;
+              font-weight: 600;
+              margin: 0;
+            }
+
+            .meeting-info span {
+              font-size: 12px;
+              color: #a0a0c0;
+            }
+
+            .top-controls {
               display: flex;
               gap: 8px;
-              flex-wrap: wrap;
-              justify-content: center;
             }
-            .proctor-controls button {
-              padding: 8px 16px;
+
+            .top-controls button {
+              padding: 8px;
+              background: none;
+              border: 1px solid var(--border);
+              border-radius: 6px;
+              cursor: pointer;
+              color: var(--text-color);
               font-size: 14px;
+              transition: background-color 0.2s;
             }
+
+            .top-controls button:hover {
+              background: #2e2e4b;
+            }
+
+            .main-content {
+              flex: 1;
+              display: flex;
+              overflow: hidden;
+            }
+
+            .video-container {
+              flex: 1;
+              padding: 12px;
+              background: #000;
+              overflow: auto;
+            }
+
+            .video-gallery {
+              display: grid;
+              grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+              gap: 12px;
+              max-width: 1400px;
+              margin: 0 auto;
+            }
+
+            .video-item {
+              display: flex;
+              flex-direction: column;
+              gap: 12px;
+              background: #1c1c38;
+              border-radius: 10px;
+              overflow: hidden;
+              transition: transform 0.2s;
+            }
+
+            .video-item:hover {
+              transform: scale(1.02);
+            }
+
+            .video-wrapper {
+              position: relative;
+              width: 100%;
+              aspect-ratio: 16 / 9;
+            }
+
+            .video-element {
+              width: 100%;
+              height: 100%;
+              object-fit: cover;
+            }
+
+            .video-overlay {
+              position: absolute;
+              bottom: 0;
+              left: 0;
+              right: 0;
+              padding: 8px;
+              background: linear-gradient(to top, rgba(0,0,0,0.7), transparent);
+              color: var(--text-color);
+              display: flex;
+              flex-direction: column;
+              gap: 4px;
+            }
+
+            .video-name {
+              font-size: 13px;
+              font-weight: 500;
+            }
+
+            .video-status {
+              font-size: 11px;
+              display: flex;
+              align-items: center;
+              gap: 6px;
+            }
+
+            .video-status span {
+              color: #a0a0c0;
+            }
+
+            .proctor-controls {
+              display: flex;
+              gap: 4px;
+            }
+
+            .proctor-controls button {
+              padding: 6px;
+              background: rgba(255,255,255,0.1);
+              border: none;
+              border-radius: 4px;
+              color: var(--text-color);
+              cursor: pointer;
+              font-size: 12px;
+              transition: background-color 0.2s;
+            }
+
+            .proctor-controls button:hover {
+              background: rgba(255,255,255,0.2);
+            }
+
+            .proctor-controls button.disabled {
+              background: var(--error);
+            }
+
+            .proctor-controls button.proctor-enabled {
+              background: var(--success);
+            }
+
+            .side-panel {
+              width: 300px;
+              background: var(--secondary-bg);
+              border-left: 1px solid var(--border);
+              display: flex;
+              flex-direction: column;
+              transform: translateX(100%);
+              transition: transform 0.3s ease-in-out;
+            }
+
+            .side-panel.open {
+              transform: translateX(0);
+            }
+
             .chat-container {
               flex: 1;
               display: flex;
               flex-direction: column;
-              border: 1px solid #ccc;
-              border-radius: 8px;
-              padding: 15px;
-              background: #fff;
-              box-shadow: 0 4px 8px rgba(0,0,0,0.1);
-              max-width: 400px;
+              padding: 12px;
             }
+
+            .chat-header {
+              display: flex;
+              justify-content: space-between;
+              align-items: center;
+              margin-bottom: 12px;
+            }
+
+            .chat-header h3 {
+              font-size: 16px;
+              font-weight: 600;
+              margin: 0;
+            }
+
+            .chat-header button {
+              background: none;
+              border: none;
+              font-size: 14px;
+              cursor: pointer;
+              color: var(--text-color);
+              opacity: 0.7;
+            }
+
+            .chat-header button:hover {
+              opacity: 1;
+            }
+
             .chat-messages {
               flex: 1;
               overflow-y: auto;
-              max-height: 400px;
-              margin-bottom: 15px;
-              padding: 10px;
-              background: #f9f9f9;
-              border-radius: 6px;
-            }
-            .chat-message {
-              margin-bottom: 10px;
-              word-break: break-word;
               padding: 8px;
+              background: #1c1c38;
               border-radius: 6px;
-              background: #e9ecef;
-              transition: background-color 0.3s;
+              margin-bottom: 12px;
             }
+
+            .chat-message {
+              margin-bottom: 12px;
+              padding: 10px;
+              border-radius: 6px;
+              background: #24244a;
+              max-width: 80%;
+            }
+
             .chat-message.own-message {
-              background: #007bff;
-              color: white;
-              margin-left: 20%;
+              background: var(--accent-blue);
+              margin-left: auto;
             }
+
+            .chat-meta {
+              display: flex;
+              gap: 6px;
+              align-items: baseline;
+              margin-bottom: 4px;
+            }
+
             .chat-sender {
-              font-weight: 600;
-              color: #007bff;
+              font-weight: 500;
+              color: var(--accent-purple);
             }
-            .chat-message.own-message .chat-sender {
-              color: white;
-            }
+
             .chat-time {
-              color: #666;
-              font-size: 0.8em;
-              margin-left: 5px;
+              color: #a0a0c0;
+              font-size: 0.75em;
             }
+
+            .chat-text {
+              font-size: 13px;
+            }
+
             .chat-input {
               display: flex;
-              gap: 10px;
+              gap: 8px;
             }
-            .debug {
-              margin-top: 20px;
+
+            .chat-input input {
+              flex: 1;
+              padding: 10px;
+              border: 1px solid var(--border);
+              border-radius: 6px;
+              font-size: 13px;
+              background: #24244a;
+              color: var(--text-color);
+            }
+
+            .chat-input input:focus {
+              border-color: var(--accent-blue);
+              outline: none;
+            }
+
+            .chat-input button {
+              padding: 10px;
+              background: var(--accent-blue);
+              color: var(--text-color);
+              border: none;
+              border-radius: 6px;
+              cursor: pointer;
+            }
+
+            .chat-input button:hover {
+              background: var(--accent-purple);
+            }
+
+            .bottom-bar {
+              display: flex;
+              justify-content: center;
+              padding: 10px;
+              background: var(--secondary-bg);
+              border-top: 1px solid var(--border);
+            }
+
+            .controls {
+              display: flex;
+              gap: 12px;
+            }
+
+            .controls button {
+              padding: 10px;
+              background: none;
+              border: 1px solid var(--border);
+              border-radius: 6px;
+              cursor: pointer;
+              color: var(--text-color);
+              font-size: 14px;
+              transition: background-color 0.2s;
+            }
+
+            .controls button:hover {
+              background: #2e2e4b;
+            }
+
+            .controls button.disabled {
+              color: var(--error);
+              border-color: var(--error);
+            }
+
+            .controls button.sharing {
+              color: var(--success);
+              border-color: var(--success);
+            }
+
+            .debug-panel {
+              position: absolute;
+              bottom: 60px;
+              left: 16px;
+              right: 16px;
               max-height: 200px;
               overflow-y: auto;
-              border: 1px solid #ccc;
-              padding: 15px;
-              border-radius: 8px;
-              background: #fff;
+              background: var(--secondary-bg);
+              border: 1px solid var(--border);
+              padding: 12px;
+              border-radius: 6px;
+              box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+              z-index: 1000;
             }
-            @media (max-width: 768px) {
+
+            .debug-panel h4 {
+              font-size: 14px;
+              margin-bottom: 8px;
+            }
+
+            .debug-panel ul {
+              list-style: none;
+              padding: 0;
+              margin: 0;
+            }
+
+            .debug-panel li {
+              font-size: 12px;
+              margin-bottom: 4px;
+              color: #a0a0c0;
+            }
+
+            @media (max-width: 1024px) {
               .main-content {
                 flex-direction: column;
               }
-              .chat-container {
-                max-width: 100%;
+              .side-panel {
+                width: 100%;
+                height: 40%;
+                border-left: none;
+                border-top: 1px solid var(--border);
+                transform: translateY(100%);
+              }
+              .side-panel.open {
+                transform: translateY(0);
               }
               .video-container {
-                grid-template-columns: 1fr;
+                height: 60%;
               }
-              .alert-container {
-                top: 10px;
-                right: 10px;
-                max-width: 90%;
+              .video-gallery {
+                grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
               }
             }
-          `}
+
+            @media (max-width: 768px) {
+              .top-bar {
+                flex-direction: column;
+                gap: 8px;
+                padding: 8px 16px;
+              }
+              .controls {
+                gap: 8px;
+              }
+              .controls button {
+                padding: 8px;
+                font-size: 12px;
+              }
+              .alert-container {
+                top: 8px;
+                right: 8px;
+                max-width: 90%;
+              }
+              .join-room {
+                padding: 16px;
+                max-width: 90%;
+              }
+              .video-gallery {
+                grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+              }
+            }`}
         </style>
       </div>
     </ErrorBoundary>
