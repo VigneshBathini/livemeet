@@ -4,10 +4,7 @@ import SimplePeer from 'simple-peer';
 import * as faceapi from 'face-api.js';
 import { v4 as uuidv4 } from 'uuid';
 
-// const SIGNALING_SERVER_URL = 'http://localhost:3000';
-
-const SIGNALING_SERVER_URL = 'https://livemeet-ribm.onrender.com';
-
+const SIGNALING_SERVER_URL = 'http://localhost:3000' || 'https://livemeet-ribm.onrender.com';
 
 class ErrorBoundary extends React.Component {
   state = { hasError: false };
@@ -57,11 +54,11 @@ const Video = () => {
   const [isHost, setIsHost] = useState(false);
   const [participantControls, setParticipantControls] = useState({});
   const [alerts, setAlerts] = useState([]);
+  
   const lastTabSwitch = useRef(0);
   const renegotiationQueue = useRef({});
   const pendingRemoteStreams = useRef({});
   const videoStreamCount = useRef({});
-
   const socketRef = useRef();
   const userVideoRef = useRef({}); 
   const peerVideoRefs = useRef({}); 
@@ -69,6 +66,11 @@ const Video = () => {
   const peersRef = useRef({});
   const chatRef = useRef();
   const detectionIntervals = useRef({});
+  
+  // Enhanced screen sharing state management
+  const screenShareTrackRef = useRef(null);
+  const screenShareCleanupRef = useRef(null);
+  const screenShareActiveRef = useRef(false);
 
   const addAlert = useCallback((message, type = 'error') => {
     const id = Date.now();
@@ -86,6 +88,66 @@ const Video = () => {
 
   const shortId = (id) => id.slice(0, 8);
 
+  // Enhanced screen sharing cleanup function
+  const cleanupScreenSharing = useCallback(async () => {
+    logDebug('Starting comprehensive screen sharing cleanup...');
+    
+    screenShareActiveRef.current = false;
+    
+    // Stop and cleanup previous screen stream
+    if (screenStream) {
+      screenStream.getTracks().forEach((track) => {
+        track.onended = null;
+        if (track.readyState === 'live') {
+          track.stop();
+        }
+      });
+      setScreenStream(null);
+    }
+
+    // Clear screen track reference
+    if (screenShareTrackRef.current) {
+      screenShareTrackRef.current.onended = null;
+      screenShareTrackRef.current = null;
+    }
+
+    // Remove screen tracks from all peers
+    const cleanupPromises = Object.entries(peersRef.current).map(async ([peerId, peer]) => {
+      if (peer && peer._pc) {
+        try {
+          // Find and remove screen track sender
+          const screenSender = peer._pc.getSenders().find((s) => s.track?._type === 'screen');
+          if (screenSender) {
+            await screenSender.replaceTrack(null);
+            logDebug(`Removed screen track from peer ${peerId}`);
+          }
+
+          // Renegotiate after removing track
+          if (peer._pc.signalingState === 'stable') {
+            await renegotiatePeer(peer, peerId, 0, true);
+          }
+        } catch (err) {
+          logDebug(`Error cleaning up screen track for peer ${peerId}: ${err.message}`);
+        }
+      }
+    });
+
+    await Promise.all(cleanupPromises);
+
+    // Clear local screen video element
+    if (userVideoRef.current?.screen) {
+      userVideoRef.current.screen.srcObject = null;
+    }
+
+    // Execute cleanup callback if exists
+    if (screenShareCleanupRef.current) {
+      screenShareCleanupRef.current();
+      screenShareCleanupRef.current = null;
+    }
+
+    logDebug('Screen sharing cleanup completed');
+  }, [screenStream]);
+
   // Assign screen share stream to local video element
   useEffect(() => {
     if (screenStream && userVideoRef.current.screen) {
@@ -98,6 +160,19 @@ const Video = () => {
     } else if (screenStream && !userVideoRef.current.screen) {
       logDebug('Screen share video element not yet available.');
     }
+
+    // Cleanup function for screen stream
+    screenShareCleanupRef.current = () => {
+      if (userVideoRef.current?.screen) {
+        userVideoRef.current.screen.srcObject = null;
+      }
+    };
+
+    return () => {
+      if (screenShareCleanupRef.current) {
+        screenShareCleanupRef.current();
+      }
+    };
   }, [screenStream, logDebug, addAlert]);
 
   useEffect(() => {
@@ -109,22 +184,15 @@ const Video = () => {
   useEffect(() => {
     const handleVisibilityChange = () => {
       if (document.hidden && !isScreenSharing && participantControls[socketRef.current.id]?.proctor) {
-							   
-													   
-									
         logDebug('Tab switch detected during proctor mode and screen sharing');
         addAlert('Tab switching detected. Please remain on the current tab during proctor mode.', 'warning');
-										   
+        
         socketRef.current.emit('tab-switch-alert', {
           roomId,
           userId: socketRef.current.id,
           userName,
           message: `${userName} switched tabs during proctor mode.`,
         });
-				
-																		 
-																						 
-		 
       }
     };
     document.addEventListener('visibilitychange', handleVisibilityChange);
@@ -134,7 +202,7 @@ const Video = () => {
   }, [isScreenSharing, participantControls, roomId, userName, logDebug, addAlert]);
 
   useEffect(() => {
-	const isSupportedBrowser = !!window.RTCPeerConnection && !!navigator.mediaDevices.getUserMedia;
+    const isSupportedBrowser = !!window.RTCPeerConnection && !!navigator.mediaDevices.getUserMedia;
     if (!isSupportedBrowser) {
       logDebug('Warning: Your browser may not fully support WebRTC.');
       addAlert('Please use a modern browser like Chrome or Firefox for video calls.', 'error');
@@ -156,7 +224,7 @@ const Video = () => {
     loadFaceApiModels();
   }, [logDebug, addAlert]);	
   
-    useEffect(() => {
+  useEffect(() => {
     socketRef.current = io(SIGNALING_SERVER_URL, {
       transports: ['websocket', 'polling'],
       reconnection: true,
@@ -275,7 +343,7 @@ const Video = () => {
     if (localStream) {
       const videoTrack = localStream.getVideoTracks()[0];
       if (videoTrack) {
-        videoTrack._type = 'camera'; // Tag for reliable classification
+        videoTrack._type = 'camera';
         logDebug(`Tagged camera track with type: camera (ID: ${videoTrack.id})`);
       }
     }
@@ -326,7 +394,19 @@ const Video = () => {
                 });
                 logDebug(`Sent face detection alert to ${userId}`);
               }
-            } catch (err) {
+              else if(detections.length >= 2){
+                  const participantName = connectionStatus[userId]?.userName || shortId(userId);
+                const hostMessage = `Multiple face detected for ${participantName} on camera stream.`;
+                const participantMessage = 'Multiple face detected. Please ensure you are visible on your camera.';
+                addAlert(hostMessage, 'warning');
+                socketRef.current.emit('face-detection-alert', {
+                  roomId,
+                  userId,
+                  message: participantMessage,
+                });
+              }
+            } 
+            catch (err) {
               logDebug(`Face detection error for ${userId} (camera stream): ${err.message}`);
               const participantName = connectionStatus[userId]?.userName || shortId(userId);
               const hostMessage = `Face detection error for ${participantName} on camera stream.`;
@@ -401,7 +481,17 @@ const Video = () => {
     addAlert(`Room created: ${newRoomId}`, 'success');
 
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+      const stream = await navigator.mediaDevices.getUserMedia({ 
+        video: { width: { ideal: 1280 }, height: { ideal: 720 } },
+        audio: { echoCancellation: true, noiseSuppression: true } 
+      });
+      
+      stream.getVideoTracks().forEach(track => {
+        track.enabled = true;
+        track._type = 'camera';
+      });
+      stream.getAudioTracks().forEach(track => track.enabled = true);
+      
       setLocalStream(stream);
       setIsVideoOn(true);
       setIsAudioOn(true);
@@ -441,7 +531,17 @@ const Video = () => {
 
     logDebug(`Joining room: ${roomId} as ${userName}`);
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+      const stream = await navigator.mediaDevices.getUserMedia({ 
+        video: { width: { ideal: 1280 }, height: { ideal: 720 } },
+        audio: { echoCancellation: true, noiseSuppression: true } 
+      });
+      
+      stream.getVideoTracks().forEach(track => {
+        track.enabled = true;
+        track._type = 'camera';
+      });
+      stream.getAudioTracks().forEach(track => track.enabled = true);
+      
       setLocalStream(stream);
       setIsVideoOn(true);
       setIsAudioOn(true);
@@ -501,8 +601,12 @@ const Video = () => {
         }
       } else {
         try {
-          const newStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: isAudioOn });
+          const newStream = await navigator.mediaDevices.getUserMedia({ 
+            video: { width: { ideal: 1280 }, height: { ideal: 720 } },
+            audio: false 
+          });
           const newVideoTrack = newStream.getVideoTracks()[0];
+          newVideoTrack._type = 'camera';
           setLocalStream(newStream);
           setIsVideoOn(true);
           logDebug('Reacquired camera stream successfully.');
@@ -564,173 +668,135 @@ const Video = () => {
     }
   };
 
-  // Function to renegotiate peer connection after adding/removing tracks
-  const renegotiatePeer = async (peer, userId, retryCount = 0) => {
-  if (renegotiationQueue.current[userId]) {
-    logDebug(`Renegotiation for ${userId} already queued, skipping...`);
-    return;
-  }
-  renegotiationQueue.current[userId] = true;
-
-  try {
-    if (peer._pc.signalingState !== 'stable') {
-      if (retryCount < 5) { // Increased retries
-        logDebug(`Peer ${userId} not in stable state (state: ${peer._pc.signalingState}), retrying renegotiation (${retryCount + 1}/5)...`);
-        setTimeout(() => {
-          delete renegotiationQueue.current[userId];
-          renegotiatePeer(peer, userId, retryCount + 1);
-        }, 1000); // Increased delay
-        return;
-      } else {
-        logDebug(`Failed to renegotiate peer ${userId}: not in stable state after 5 retries`);
-        addAlert(`Failed to renegotiate connection with ${connectionStatus[userId]?.userName || shortId(userId)}.`, 'error');
-        delete renegotiationQueue.current[userId];
-        return;
-      }
-    }
-    const offer = await peer._pc.createOffer({ offerToReceiveVideo: true, offerToReceiveAudio: true });
-    await peer._pc.setLocalDescription(offer);
-    logDebug(`Sending new offer to ${userId} after track change: ${JSON.stringify(offer).slice(0, 100)}...`);
-    socketRef.current.emit('offer', { signal: offer, to: userId });
-
-    // Wait for answer with a timeout
-    const answerTimeout = setTimeout(() => {
-      logDebug(`Timeout waiting for answer from ${userId}`);
-      addAlert(`No answer received from ${connectionStatus[userId]?.userName || shortId(userId)} for renegotiation.`, 'error');
-      delete renegotiationQueue.current[userId];
-    }, 10000);
-
-    peer._pc.onnegotiationneeded = () => {
-      logDebug(`Negotiation needed for ${userId}`);
-    };
-
-    socketRef.current.once('answer', (data) => {
-      if (data.from === userId) {
-        clearTimeout(answerTimeout);
-        logDebug(`Received answer from ${userId} for renegotiation`);
-        peer.signal(data.signal);
-        delete renegotiationQueue.current[userId];
-      }
-    });
-  } catch (err) {
-    logDebug(`Error renegotiating peer connection for ${userId}: ${err.message}`);
-    addAlert(`Failed to renegotiate connection with ${connectionStatus[userId]?.userName || shortId(userId)}.`, 'error');
-    delete renegotiationQueue.current[userId];
-  }
-};
-
-
- const toggleScreenShare = async () => {
-  if (!isScreenSharing) {
-    try {
-      const isProctorEnabled = participantControls[socketRef.current?.id]?.proctor || false;
-      addAlert(
-        isProctorEnabled
-          ? 'Proctor mode requires sharing your entire screen. Tab or window sharing is not allowed.'
-          : 'Select a screen, window, or tab to share.',
-        'info'
-      );
-
-      const videoConstraints = isProctorEnabled
-        ? { video: { displaySurface: 'monitor', cursor: 'never' } }
-        : { video: true };
-
-      const screenStream = await navigator.mediaDevices.getDisplayMedia(videoConstraints);
-      const screenTrack = screenStream.getVideoTracks()[0];
-      screenTrack._type = 'screen';
-      const settings = screenTrack.getSettings();
-      logDebug(`Screen share settings: ${JSON.stringify(settings)}`);
-      logDebug(`Tagged screen track with type: screen (ID: ${screenTrack.id})`);
-
-      if (isProctorEnabled && settings.displaySurface !== 'monitor') {
-        screenTrack.stop();
-        addAlert('Proctor mode requires sharing the entire screen, not a specific tab or window.', 'error');
-        return;
-      }
-
-      Object.values(peersRef.current).forEach((peer) => {
-        const senders = peer._pc.getSenders();
-        const screenSender = senders.find((s) => s.track?._type === 'screen');
-        if (screenSender) {
-          screenSender.replaceTrack(screenTrack).catch((err) => {
-            logDebug(`Error replacing screen track for peer ${peer._id || 'unknown'}: ${err.message}`);
-            addAlert('Failed to share screen.', 'error');
-          });
-          logDebug(`Replaced screen track for peer ${peer._id || 'unknown'}`);
-        } else {
-          peer._pc.addTrack(screenTrack, screenStream);
-          logDebug(`Added new screen track to peer ${peer._id || 'unknown'}`);
+  // FIXED: Enhanced screen sharing with proper cleanup and track management
+  const toggleScreenShare = async () => {
+    if (!isScreenSharing) {
+      try {
+        // Wait for any ongoing cleanup to complete
+        if (screenShareActiveRef.current) {
+          await cleanupScreenSharing();
+          await new Promise(resolve => setTimeout(resolve, 500));
         }
-        renegotiatePeer(peer, peer._id);
-      });
 
-      setScreenStream(screenStream);
-      setIsScreenSharing(true);
-      addAlert(isProctorEnabled ? 'Screen sharing started (entire screen).' : 'Screen sharing started.', 'success');
+        const isProctorEnabled = participantControls[socketRef.current?.id]?.proctor || false;
+        addAlert(
+          isProctorEnabled
+            ? 'Proctor mode requires sharing your entire screen. Tab or window sharing is not allowed.'
+            : 'Select a screen, window, or tab to share.',
+          'info'
+        );
 
-      // Retry sending screen-share-status
-      const sendScreenShareStatus = (attempt = 1) => {
-        if (socketRef.current?.connected) {
-          socketRef.current.emit('screen-share-status', {
-            roomId,
-            userName,
-            isScreenSharing: true,
-          });
-          logDebug(`Sent screen-share-status (start) to room ${roomId}`);
-        } else if (attempt <= 5) {
-          logDebug(`Socket not connected, retrying screen-share-status (start) (${attempt}/5)...`);
-          setTimeout(() => sendScreenShareStatus(attempt + 1), 1000);
-        } else {
-          logDebug(`Failed to send screen-share-status (start) after 5 attempts`);
-          addAlert('Failed to notify others of screen sharing start.', 'error');
+        const videoConstraints = isProctorEnabled
+          ? { video: { displaySurface: 'monitor', cursor: 'never' } }
+          : { video: true };
+
+        const newScreenStream = await navigator.mediaDevices.getDisplayMedia(videoConstraints);
+        const newScreenTrack = newScreenStream.getVideoTracks()[0];
+        newScreenTrack._type = 'screen';
+        const settings = newScreenTrack.getSettings();
+        logDebug(`Screen share settings: ${JSON.stringify(settings)}`);
+        logDebug(`Tagged screen track with type: screen (ID: ${newScreenTrack.id})`);
+
+        if (isProctorEnabled && settings.displaySurface !== 'monitor') {
+          newScreenTrack.stop();
+          newScreenStream.getTracks().forEach(track => track.stop());
+          addAlert('Proctor mode requires sharing the entire screen, not a specific tab or window.', 'error');
+          return;
         }
-      };
-      sendScreenShareStatus();
 
-      screenTrack.onended = () => {
-        logDebug('Screen sharing stopped by user.');
-        addAlert('Screen sharing stopped.', 'info');
-        stopScreenShare();
-      };
-    } catch (err) {
-      logDebug(`Error starting screen share: ${err.message}`);
-      if (err.name === 'NotAllowedError') {
-        addAlert('Screen sharing permission denied.', 'error');
-      } else if (err.name === 'NotSupportedError') {
-        addAlert('Browser does not support entire screen sharing. Use Chrome or Edge.', 'error');
-      } else {
-        addAlert('Failed to start screen sharing.', 'error');
+        // Set active state BEFORE adding tracks
+        screenShareActiveRef.current = true;
+        screenShareTrackRef.current = newScreenTrack;
+
+        // Add screen track to all existing peers with proper sequencing
+        const addTrackPromises = Object.entries(peersRef.current).map(async ([peerId, peer]) => {
+          if (peer && peer._pc && peer._pc.signalingState === 'stable') {
+            try {
+              // Remove any existing screen track first
+              const existingScreenSender = peer._pc.getSenders().find(s => s.track?._type === 'screen');
+              if (existingScreenSender) {
+                await existingScreenSender.replaceTrack(null);
+                logDebug(`Cleaned up existing screen track for peer ${peerId}`);
+                await new Promise(resolve => setTimeout(resolve, 100)); // Small delay for cleanup
+              }
+
+              // Add new screen track
+              peer._pc.addTrack(newScreenTrack, newScreenStream);
+              logDebug(`Added new screen track to peer ${peerId}`);
+              
+              // Wait before renegotiation
+              await new Promise(resolve => setTimeout(resolve, 200));
+              
+              // Renegotiate with cleanup flag
+              await renegotiatePeer(peer, peerId, 0, true);
+            } catch (err) {
+              logDebug(`Error adding screen track to peer ${peerId}: ${err.message}`);
+            }
+          }
+        });
+
+        await Promise.all(addTrackPromises);
+
+        // Update state after all peers are updated
+        setScreenStream(newScreenStream);
+        setIsScreenSharing(true);
+        addAlert(isProctorEnabled ? 'Screen sharing started (entire screen).' : 'Screen sharing started.', 'success');
+
+        // Notify others about screen sharing start
+        const sendScreenShareStatus = (attempt = 1) => {
+          if (socketRef.current?.connected) {
+            socketRef.current.emit('screen-share-status', {
+              roomId,
+              userName,
+              isScreenSharing: true,
+            });
+            logDebug(`Sent screen-share-status (start) to room ${roomId}`);
+          } else if (attempt <= 5) {
+            logDebug(`Socket not connected, retrying screen-share-status (start) (${attempt}/5)...`);
+            setTimeout(() => sendScreenShareStatus(attempt + 1), 1000);
+          } else {
+            logDebug(`Failed to send screen-share-status (start) after 5 attempts`);
+            addAlert('Failed to notify others of screen sharing start.', 'error');
+          }
+        };
+        sendScreenShareStatus();
+
+        // Enhanced event listener for screen track end
+        const handleTrackEnd = () => {
+          logDebug('Screen share track ended by browser/system');
+          stopScreenShare();
+        };
+        
+        newScreenTrack.onended = handleTrackEnd;
+
+      } catch (err) {
+        logDebug(`Error starting screen share: ${err.message}`);
+        screenShareActiveRef.current = false;
+        screenShareTrackRef.current = null;
+        if (err.name === 'NotAllowedError') {
+          addAlert('Screen sharing permission denied.', 'error');
+        } else if (err.name === 'NotSupportedError') {
+          addAlert('Browser does not support entire screen sharing. Use Chrome or Edge.', 'error');
+        } else {
+          addAlert('Failed to start screen sharing.', 'error');
+        }
       }
+    } else {
+      stopScreenShare();
     }
-  } else {
-    stopScreenShare();
-  }
-};
+  };
 
-const stopScreenShare = async () => {
-  if (screenStream) {
-    screenStream.getTracks().forEach((track) => track.stop());
-    setScreenStream(null);
+  // FIXED: Enhanced stop screen share with comprehensive cleanup
+  const stopScreenShare = async () => {
+    logDebug('Stopping screen share with full cleanup...');
+    
     setIsScreenSharing(false);
+    
+    await cleanupScreenSharing();
+
     addAlert('Screen sharing stopped.', 'info');
 
-    Object.values(peersRef.current).forEach((peer) => {
-      const sender = peer._pc.getSenders().find((s) => s.track?._type === 'screen');
-      if (sender) {
-        sender.replaceTrack(null).catch((err) => {
-          logDebug(`Error removing screen track for peer ${peer._id || 'unknown'}: ${err.message}`);
-          addAlert('Failed to stop screen sharing.', 'error');
-        });
-        logDebug(`Removed screen track for peer ${peer._id || 'unknown'}`);
-        renegotiatePeer(peer, peer._id);
-      }
-    });
-
-    if (userVideoRef.current?.screen) {
-      userVideoRef.current.screen.srcObject = null;
-    }
-
-    // Retry sending screen-share-status
+    // Notify others about screen sharing stop
     const sendScreenShareStatus = (attempt = 1) => {
       if (socketRef.current?.connected) {
         socketRef.current.emit('screen-share-status', {
@@ -748,6 +814,182 @@ const stopScreenShare = async () => {
       }
     };
     sendScreenShareStatus();
+    
+    logDebug('Screen share stopped completely');
+  };
+
+  // FIXED: Enhanced renegotiation with better state management
+  const renegotiationPeer = async (peer, userId, retryCount = 0, isCleanup = false) => {
+    const queueKey = `${userId}_${isCleanup ? 'cleanup' : 'regular'}`;
+    
+    if (renegotiationQueue.current[queueKey]) {
+      logDebug(`Renegotiation for ${userId} (${isCleanup ? 'cleanup' : 'regular'}) already queued, skipping...`);
+      return;
+    }
+    renegotiationQueue.current[queueKey] = true;
+
+    try {
+      // Wait for stable state with timeout
+      let attempts = 0;
+      const maxAttempts = 15;
+      while (peer._pc.signalingState !== 'stable' && attempts < maxAttempts) {
+        logDebug(`Waiting for stable state for ${userId} (${attempts + 1}/${maxAttempts}), current: ${peer._pc.signalingState}`);
+        await new Promise(resolve => setTimeout(resolve, 300));
+        attempts++;
+      }
+
+      if (peer._pc.signalingState !== 'stable') {
+        logDebug(`Peer ${userId} not in stable state after ${maxAttempts} attempts (state: ${peer._pc.signalingState})`);
+        throw new Error(`Peer not in stable state after ${maxAttempts} attempts`);
+      }
+
+      const offerOptions = {
+        offerToReceiveVideo: true,
+        offerToReceiveAudio: true
+      };
+
+      const offer = await peer._pc.createOffer(offerOptions);
+      await peer._pc.setLocalDescription(offer);
+      logDebug(`Sending ${isCleanup ? 'cleanup' : 'new'} offer to ${userId} after track change: ${JSON.stringify(offer).slice(0, 100)}...`);
+      socketRef.current.emit('offer', { signal: offer, to: userId });
+
+      const answerTimeout = setTimeout(() => {
+        logDebug(`Timeout waiting for answer from ${userId} (${isCleanup ? 'cleanup' : 'regular'})`);
+        //addAlert(`No answer received from ${connectionStatus[userId]?.userName || shortId(userId)} for ${isCleanup ? 'cleanup' : 'renegotiation'}.`, 'error');
+        delete renegotiationQueue.current[queueKey];
+      }, 12000);
+
+      socketRef.current.once(`answer_${Date.now()}`, (data) => {
+        if (data.from === userId) {
+          clearTimeout(answerTimeout);
+          logDebug(`Received answer from ${userId} for ${isCleanup ? 'cleanup' : 'renegotiation'}`);
+          peer.signal(data.signal);
+          delete renegotiationQueue.current[queueKey];
+        }
+      });
+
+      // Listen for answer with unique identifier
+      socketRef.current.on('answer', (data) => {
+        if (data.from === userId) {
+          clearTimeout(answerTimeout);
+          logDebug(`Received answer from ${userId} for ${isCleanup ? 'cleanup' : 'renegotiation'}`);
+          peer.signal(data.signal);
+          delete renegotiationQueue.current[queueKey];
+        }
+      });
+
+    } catch (err) {
+      logDebug(`Error renegotiating peer connection for ${userId} (${isCleanup ? 'cleanup' : 'regular'}): ${err.message}`);
+      if (retryCount < 3) {
+        logDebug(`Retrying renegotiation for ${userId} (${retryCount + 1}/3)...`);
+        setTimeout(() => {
+          delete renegotiationQueue.current[queueKey];
+          renegotiationPeer(peer, userId, retryCount + 1, isCleanup);
+        }, 1000);
+      } else {
+        addAlert(`Failed to renegotiate connection with ${connectionStatus[userId]?.userName || shortId(userId)}.`, 'error');
+        delete renegotiationQueue.current[queueKey];
+      }
+    }
+  };
+
+  // Helper function to assign peer streams with retry logic
+  const assignPeerStream = (userId, streamType, singleTrackStream, attempt = 1) => {
+    const videoElement = peerVideoRefs.current[userId]?.[streamType];
+    
+    if (videoElement && !videoElement.srcObject) { 
+      videoElement.srcObject = singleTrackStream;
+      videoElement.play().catch((err) => {
+        logDebug(`Error playing ${streamType} stream for ${userId}: ${err.message}`);
+        addAlert(`Failed to play ${streamType} stream for ${connectionStatus[userId]?.userName || shortId(userId)}.`, 'error');
+      });
+      logDebug(`Assigned ${streamType} stream to video element for ${userId}`);
+      setConnectionStatus((prev) => ({
+        ...prev,
+        [userId]: {
+          ...prev[userId],
+          status: 'connected',
+          streams: { ...prev[userId]?.streams, [streamType]: true },
+        },
+      }));
+      // Clear pending for this type
+      if (pendingRemoteStreams.current[userId]) {
+        pendingRemoteStreams.current[userId][streamType] = null;
+      }
+    } else if (attempt <= 20 && !videoElement) {
+      logDebug(`Video element for ${userId} (${streamType}) not ready, retrying (${attempt}/20)...`);
+      setTimeout(() => assignPeerStream(userId, streamType, singleTrackStream, attempt + 1), 500);
+    } else if (videoElement && videoElement.srcObject && attempt === 1) {
+      logDebug(`Video element for ${userId} (${streamType}) already has stream, skipping assignment`);
+    } else {
+      logDebug(`Failed to assign ${streamType} stream for ${userId} after 20 attempts`);
+      addAlert(`Failed to assign ${streamType} stream for ${connectionStatus[userId]?.userName || shortId(userId)}. Check browser console.`, 'error');
+    }
+  };
+
+  // FIXED: Enhanced renegotiation with better state management
+const renegotiatePeer = async (peer, userId, retryCount = 0, isCleanup = false) => {
+  const queueKey = `${userId}_${isCleanup ? 'cleanup' : 'regular'}`;
+  
+  if (renegotiationQueue.current[queueKey]) {
+    logDebug(`Renegotiation for ${userId} (${isCleanup ? 'cleanup' : 'regular'}) already queued, skipping...`);
+    return;
+  }
+  renegotiationQueue.current[queueKey] = true;
+
+  try {
+    // Wait for stable state with timeout
+    let attempts = 0;
+    const maxAttempts = 20;
+    while (peer._pc.signalingState !== 'stable' && attempts < maxAttempts) {
+      logDebug(`Waiting for stable state for ${userId} (${attempts + 1}/${maxAttempts}), current: ${peer._pc.signalingState}`);
+      await new Promise(resolve => setTimeout(resolve, 300));
+      attempts++;
+    }
+
+    if (peer._pc.signalingState !== 'stable') {
+      logDebug(`Peer ${userId} not in stable state after ${maxAttempts} attempts (state: ${peer._pc.signalingState})`);
+      throw new Error(`Peer not in stable state after ${maxAttempts} attempts`);
+    }
+
+    const offerOptions = {
+      offerToReceiveVideo: true,
+      offerToReceiveAudio: true,
+      iceRestart: isCleanup, // Force ICE restart for cleanup renegotiations
+    };
+
+    const offer = await peer._pc.createOffer(offerOptions);
+    await peer._pc.setLocalDescription(offer);
+    logDebug(`Sending ${isCleanup ? 'cleanup' : 'new'} offer to ${userId}: ${JSON.stringify(offer).slice(0, 100)}...`);
+    socketRef.current.emit('offer', { signal: offer, to: userId });
+
+    const answerTimeout = setTimeout(() => {
+      logDebug(`Timeout waiting for answer from ${userId} (${isCleanup ? 'cleanup' : 'regular'})`);
+      //addAlert(`No answer received from ${connectionStatus[userId]?.userName || shortId(userId)} for ${isCleanup ? 'cleanup' : 'renegotiation'}.`, 'error');
+      delete renegotiationQueue.current[queueKey];
+    }, 15000);
+
+    socketRef.current.once(`answer_${userId}_${Date.now()}`, (data) => {
+      if (data.from === userId) {
+        clearTimeout(answerTimeout);
+        logDebug(`Received answer from ${userId} for ${isCleanup ? 'cleanup' : 'renegotiation'}`);
+        peer.signal(data.signal);
+        delete renegotiationQueue.current[queueKey];
+      }
+    });
+
+  } catch (err) {
+    logDebug(`Error renegotiating peer connection for ${userId} (${isCleanup ? 'cleanup' : 'regular'}): ${err.message}`);
+    if (retryCount < 3) {
+      logDebug(`Retrying renegotiation for ${userId} (${retryCount + 1}/3)...`);
+      setTimeout(() => {
+        delete renegotiationQueue.current[queueKey];
+        renegotiatePeer(peer, userId, retryCount + 1, isCleanup);
+      }, 1500);
+    } else {
+      addAlert(`Failed to renegotiate connection with ${connectionStatus[userId]?.userName || shortId(userId)}.`, 'error');
+      delete renegotiationQueue.current[queueKey];
+    }
   }
 };
 
@@ -779,42 +1021,20 @@ const stopScreenShare = async () => {
 
     peer._id = userId; 
 
-    if (screenStream) {
-      const screenTrack = screenStream.getVideoTracks()[0];
-      peer._pc.addTrack(screenTrack, screenStream);
-      logDebug(`Added screen share track to new peer ${userId}`);
-    }
-
-    
-    const assignPeerStream = (userId, streamType, singleTrackStream, attempt = 1) => {
-      const videoElement = peerVideoRefs.current[userId]?.[streamType];
-      if (videoElement && !videoElement.srcObject) { // Only assign if empty
-        videoElement.srcObject = singleTrackStream;
-        videoElement.play().catch((err) => {
-          logDebug(`Error playing ${streamType} stream for ${userId}: ${err.message}`);
-          addAlert(`Failed to play ${streamType} stream for ${connectionStatus[userId]?.userName || shortId(userId)}.`, 'error');
-        });
-        logDebug(`Assigned ${streamType} stream to video element for ${userId}`);
-        setConnectionStatus((prev) => ({
-          ...prev,
-          [userId]: {
-            ...prev[userId],
-            status: 'connected',
-            streams: { ...prev[userId]?.streams, [streamType]: true },
-          },
-        }));
-        // Clear pending for this type
-        pendingRemoteStreams.current[userId][streamType] = null;
-      } else if (attempt <= 20 && !videoElement) { // Increased retries for slow renders
-        logDebug(`Video element for ${userId} (${streamType}) not ready, retrying (${attempt}/20)...`);
-        setTimeout(() => assignPeerStream(userId, streamType, singleTrackStream, attempt + 1), 500); // Slower retry to avoid spam
-      } else if (videoElement && videoElement.srcObject && attempt === 1) {
-        logDebug(`Video element for ${userId} (${streamType}) already has stream, skipping assignment`);
-      } else {
-        logDebug(`Failed to assign ${streamType} stream for ${userId} after 20 attempts`);
-        addAlert(`Failed to assign ${streamType} stream for ${connectionStatus[userId]?.userName || shortId(userId)}. Check browser console.`, 'error');
+    // Add screen sharing track if active
+    if (isScreenSharing && screenStream && screenShareTrackRef.current) {
+      const screenTrack = screenShareTrackRef.current;
+      if (screenTrack && screenTrack.readyState === 'live') {
+        try {
+          peer._pc.addTrack(screenTrack, screenStream);
+          logDebug(`Added screen share track to new peer ${userId}`);
+          // Delay renegotiation for new peer
+          setTimeout(() => renegotiatePeer(peer, userId), 500);
+        } catch (err) {
+          logDebug(`Error adding screen track to new peer ${userId}: ${err.message}`);
+        }
       }
-    };
+    }
 
     peer.on('signal', (signal) => {
       setTimeout(() => {
@@ -833,45 +1053,72 @@ const stopScreenShare = async () => {
 
     peer.on('stream', (stream) => {
       logDebug(`Received stream from ${userId}, tracks: ${stream.getTracks().map((t) => `${t.kind}:${t.label || t.id} (settings: ${JSON.stringify(t.getSettings ? t.getSettings() : 'N/A')})`).join(', ')}`);
+      
       if (!peersRef.current[userId]) {
         peersRef.current[userId] = { remoteStreams: {} };
       }
-      pendingRemoteStreams.current[userId] = pendingRemoteStreams.current[userId] || { camera: null, screen: null };
+      pendingRemoteStreams.current[userId] = pendingRemoteStreams.current[userId] || { 
+        camera: null, 
+        screen: null, 
+        audio: null
+      };
 
       if (!videoStreamCount.current[userId]) videoStreamCount.current[userId] = 0;
 
       stream.getTracks().forEach((track) => {
-        if (track.kind !== 'video') return; // Ignore audio
+        logDebug(`Processing track ${track.id}: ${track.kind} (enabled: ${track.enabled})`);
+        
+        if (track.kind === 'audio') {
+          if (track.enabled) {
+            const audioStream = new MediaStream([track]);
+            pendingRemoteStreams.current[userId].audio = audioStream;
+            logDebug(`Stored audio stream for ${userId} (track: ${track.id})`);
+            
+            setTimeout(() => {
+              // Assign audio to existing video elements
+              const videoElements = [];
+              if (peerVideoRefs.current[userId]?.camera) {
+                videoElements.push(peerVideoRefs.current[userId].camera);
+              }
+              if (peerVideoRefs.current[userId]?.screen) {
+                videoElements.push(peerVideoRefs.current[userId].screen);
+              }
+              
+              videoElements.forEach(element => {
+                if (element && element.srcObject && !element.srcObject.getAudioTracks().length) {
+                  const videoTracks = element.srcObject.getVideoTracks();
+                  const combinedStream = new MediaStream([...videoTracks, ...audioStream.getAudioTracks()]);
+                  element.srcObject = combinedStream;
+                }
+              });
+            }, 200);
+          }
+        } else if (track.kind === 'video') {
+          videoStreamCount.current[userId]++;
+      
+          const settings = track.getSettings ? track.getSettings() : {};
+          let isScreen = (
+            track._type === 'screen' || 
+            settings.displaySurface ||
+            track.label?.toLowerCase().includes('screen') ||
+            track.id.includes('screen') ||
+            (settings.width >= 1280 && settings.height >= 720 && !settings.facingMode)
+          );
 
-        videoStreamCount.current[userId]++;
+          if (!isScreen && videoStreamCount.current[userId] > 1) {
+            isScreen = true;
+          }
 
-        // Robust classification
-        const settings = track.getSettings ? track.getSettings() : {};
-        let isScreen = (
-          track._type === 'screen' || // Explicit tag (preferred)
-          settings.displaySurface || // Screen tracks have this (e.g., 'monitor', 'window')
-          track.label?.toLowerCase().includes('screen') ||
-          track.id.includes('screen') ||
-          // Fallback: High res + no facingMode (cameras often have facingMode: 'user')
-          (settings.width >= 1280 && settings.height >= 720 && !settings.facingMode)
-        );
+          const streamType = isScreen ? 'screen' : 'camera';
+          logDebug(`Classified track ${track.id} as '${streamType}'`);
 
-        if (!isScreen && videoStreamCount.current[userId] > 1) {
-          isScreen = true;
+          const singleTrackStream = new MediaStream([track]);
+          pendingRemoteStreams.current[userId][streamType] = singleTrackStream;
+
+          assignPeerStream(userId, streamType, singleTrackStream);
         }
-
-        const streamType = isScreen ? 'screen' : 'camera';
-        logDebug(`Classified track ${track.id} as '${streamType}' (displaySurface: ${settings.displaySurface}, label: ${track.label}, facingMode: ${settings.facingMode}, streamCount: ${videoStreamCount.current[userId]})`);
-
-        // Create single-track stream
-        const singleTrackStream = new MediaStream([track]);
-        pendingRemoteStreams.current[userId][streamType] = singleTrackStream;
-
-        // Assign stream with retry
-        assignPeerStream(userId, streamType, singleTrackStream);
       });
 
-     
       setTimeout(() => {
         if (pendingRemoteStreams.current[userId]) {
           Object.keys(pendingRemoteStreams.current[userId]).forEach(type => {
@@ -918,20 +1165,27 @@ const stopScreenShare = async () => {
     logDebug(`User joined: ${userId} (${userName}), isHost: ${isUserHost}, current peers: ${Object.keys(peersRef.current)}`);
     setConnectionStatus((prev) => ({
       ...prev,
-      [userId]: { status: 'connecting', userName, isHost: isUserHost, streams: { camera: true, screen: false } },
+      [userId]: { 
+        status: 'connecting', 
+        userName, 
+        isHost: isUserHost, 
+        streams: { camera: false, screen: false, audio: false }
+      },
     }));
     setParticipantControls((prev) => ({ ...prev, [userId]: { video: true, audio: true, proctor: false } }));
     const peer = createPeer(userId, true);
     setPeers((prev) => ({ ...prev, [userId]: peer }));
     addAlert(`${userName} joined the meeting.`, 'info');
 
-    // If currently screen sharing, notify the new user
+    // Notify new user about current screen sharing status
     if (isScreenSharing) {
-      socketRef.current.emit('screen-share-status', {
-        roomId,
-        userName,
-        isScreenSharing: true,
-      });
+      setTimeout(() => {
+        socketRef.current.emit('screen-share-status', {
+          roomId,
+          userName,
+          isScreenSharing: true,
+        });
+      }, 1000);
     }
   };
 
@@ -1048,9 +1302,13 @@ const stopScreenShare = async () => {
               }
             });
           } else if (data.video) {
-            navigator.mediaDevices.getUserMedia({ video: true, audio: isAudioOn })
+            navigator.mediaDevices.getUserMedia({ 
+              video: { width: { ideal: 1280 }, height: { ideal: 720 } },
+              audio: false 
+            })
               .then((newStream) => {
                 const newVideoTrack = newStream.getVideoTracks()[0];
+                newVideoTrack._type = 'camera';
                 setLocalStream(newStream);
                 setIsVideoOn(true);
                 logDebug('Reacquired camera stream for host toggle.');
@@ -1237,97 +1495,96 @@ const stopScreenShare = async () => {
                     )}
                   </div>
                   
-{Object.keys(peers).map((userId) => (
-  <div className="video-item" key={userId}>
-    <div className="video-wrapper">
-      <video
-        ref={(el) => {
-          if (el) {
-            peerVideoRefs.current[userId] = { ...peerVideoRefs.current[userId], camera: el };
-            if (peersRef.current[userId]?.remoteStreams?.camera) {
-              el.srcObject = peersRef.current[userId].remoteStreams.camera;
-              el.play().catch((err) => {
-                logDebug(`Error playing camera stream for ${userId}: ${err.message}`);
-                addAlert(`Failed to play camera stream for ${connectionStatus[userId]?.userName || shortId(userId)}.`, 'error');
-              });
-            }
-          }
-        }}
-        autoPlay
-        playsInline
-        className="video-element"
-      />
-      <div className="video-overlay">
-        <span className="video-name">
-          {connectionStatus[userId]?.userName || `Participant (${shortId(userId)})`} - Camera
-        </span>
-        <div className="video-status">
-          <span>{connectionStatus[userId]?.status || 'connecting'}</span>
-          {isHost && (
-            <div className="proctor-controls">
-              <button
-                onClick={() => toggleParticipantMedia(userId, 'video')}
-                className={!participantControls[userId]?.video ? 'disabled' : ''}
-                title={participantControls[userId]?.video ? 'Turn off video' : 'Turn on video'}
-              >
-                <i className={participantControls[userId]?.video ? 'fas fa-video' : 'fas fa-video-slash'}></i>
-              </button>
-              <button
-                onClick={() => toggleParticipantMedia(userId, 'audio')}
-                className={!participantControls[userId]?.audio ? 'disabled' : ''}
-                title={participantControls[userId]?.audio ? 'Mute' : 'Unmute'}
-              >
-                <i className={participantControls[userId]?.audio ? 'fas fa-microphone' : 'fas fa-microphone-slash'}></i>
-              </button>
-              <button
-                onClick={() => toggleParticipantMedia(userId, 'proctor')}
-                className={participantControls[userId]?.proctor ? 'proctor-enabled' : ''}
-                title={participantControls[userId]?.proctor ? 'Disable proctor' : 'Enable proctor'}
-              >
-                <i className={participantControls[userId]?.proctor ? 'fas fa-user-check' : 'fas fa-user'}></i>
-              </button>
-            </div>
-          )}
-        </div>
-      </div>
-    </div>
-    {connectionStatus[userId]?.streams?.screen && (
-      <div className="video-wrapper">
-        <video
-          ref={(el) => {
-            if (el) {
-              peerVideoRefs.current[userId] = { ...peerVideoRefs.current[userId], screen: el };
-              if (peersRef.current[userId]?.remoteStreams?.screen) {
-                el.srcObject = peersRef.current[userId].remoteStreams.screen;
-                el.play().catch((err) => {
-                  logDebug(`Error playing screen stream for ${userId}: ${err.message}`);
-                  addAlert(`Failed to play screen stream for ${connectionStatus[userId]?.userName || shortId(userId)}.`, 'error');
-                });
-              } else if (pendingRemoteStreams.current[userId]?.screen) {
-                el.srcObject = pendingRemoteStreams.current[userId].screen;
-                el.play().catch((err) => {
-                  logDebug(`Error playing pending screen stream for ${userId}: ${err.message}`);
-                  addAlert(`Failed to play screen stream for ${connectionStatus[userId]?.userName || shortId(userId)}.`, 'error');
-                });
-              }
-            }
-          }}
-          autoPlay
-          playsInline
-          className="video-element"
-        />
-        <div className="video-overlay">
-          <span className="video-name">
-            {connectionStatus[userId]?.userName || `Participant (${shortId(userId)})`} - Screen
-          </span>
-          <div className="video-status">
-            <i className="fas fa-desktop"></i>
-          </div>
-        </div>
-      </div>
-    )}
-  </div>
-))}
+                  {Object.keys(peers).map((userId) => {
+                    const status = connectionStatus[userId];
+                    const controls = participantControls[userId];
+                    
+                    return (
+                      <div className="video-item" key={userId}>
+                        <div className="video-wrapper">
+                          <video
+                            ref={(el) => {
+                              if (el) {
+                                peerVideoRefs.current[userId] = { ...peerVideoRefs.current[userId], camera: el };
+                                if (pendingRemoteStreams.current[userId]?.camera && !el.srcObject) {
+                                  el.srcObject = pendingRemoteStreams.current[userId].camera;
+                                  el.play().catch((err) => {
+                                    logDebug(`Error playing camera stream for ${userId}: ${err.message}`);
+                                    //addAlert(`Failed to play camera stream for ${status?.userName || shortId(userId)}.`, 'error');
+                                  });
+                                }
+                              }
+                            }}
+                            autoPlay
+                            playsInline
+                            className="video-element"
+                          />
+                          <div className="video-overlay">
+                            <span className="video-name">
+                              {status?.userName || `Participant (${shortId(userId)})`} - Camera
+                            </span>
+                            <div className="video-status">
+                              <span>{status?.status || 'connecting'}</span>
+                              {isHost && (
+                                <div className="proctor-controls">
+                                  <button
+                                    onClick={() => toggleParticipantMedia(userId, 'video')}
+                                    className={!controls?.video ? 'disabled' : ''}
+                                    title={controls?.video ? 'Turn off video' : 'Turn on video'}
+                                  >
+                                    <i className={controls?.video ? 'fas fa-video' : 'fas fa-video-slash'}></i>
+                                  </button>
+                                  <button
+                                    onClick={() => toggleParticipantMedia(userId, 'audio')}
+                                    className={!controls?.audio ? 'disabled' : ''}
+                                    title={controls?.audio ? 'Mute' : 'Unmute'}
+                                  >
+                                    <i className={controls?.audio ? 'fas fa-microphone' : 'fas fa-microphone-slash'}></i>
+                                  </button>
+                                  <button
+                                    onClick={() => toggleParticipantMedia(userId, 'proctor')}
+                                    className={controls?.proctor ? 'proctor-enabled' : ''}
+                                    title={controls?.proctor ? 'Disable proctor' : 'Enable proctor'}
+                                  >
+                                    <i className={controls?.proctor ? 'fas fa-user-check' : 'fas fa-user'}></i>
+                                  </button>
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                        {connectionStatus[userId]?.streams?.screen && (
+                          <div className="video-wrapper">
+                            <video
+                              ref={(el) => {
+                                if (el) {
+                                  peerVideoRefs.current[userId] = { ...peerVideoRefs.current[userId], screen: el };
+                                  if (pendingRemoteStreams.current[userId]?.screen && !el.srcObject) {
+                                    el.srcObject = pendingRemoteStreams.current[userId].screen;
+                                    el.play().catch((err) => {
+                                      logDebug(`Error playing screen stream for ${userId}: ${err.message}`);
+                                      addAlert(`Failed to play screen stream for ${status?.userName || shortId(userId)}.`, 'error');
+                                    });
+                                  }
+                                }
+                              }}
+                              autoPlay
+                              playsInline
+                              className="video-element"
+                            />
+                            <div className="video-overlay">
+                              <span className="video-name">
+                                {status?.userName || `Participant (${shortId(userId)})`} - Screen
+                              </span>
+                              <div className="video-status">
+                                <i className="fas fa-desktop"></i>
+                              </div>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
               <div className={`side-panel ${showChat ? 'open' : ''}`}>
@@ -1629,6 +1886,12 @@ const stopScreenShare = async () => {
               transition: transform 0.2s;
             }
 
+            .local-video {
+              grid-column: span 2;
+              max-width: 500px;
+              margin: 0 auto;
+            }
+
             .video-item:hover {
               transform: scale(1.02);
             }
@@ -1677,6 +1940,7 @@ const stopScreenShare = async () => {
             .proctor-controls {
               display: flex;
               gap: 4px;
+              margin-left: auto;
             }
 
             .proctor-controls button {
@@ -1914,6 +2178,9 @@ const stopScreenShare = async () => {
               }
               .video-gallery {
                 grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+              }
+              .local-video {
+                grid-column: span 1;
               }
             }
 
