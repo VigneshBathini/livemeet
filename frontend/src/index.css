@@ -11,3 +11,10 @@ code {
   font-family: source-code-pro, Menlo, Monaco, Consolas, 'Courier New',
     monospace;
 }
+
+
+video.visible {
+  display: block !important;
+  visibility: visible !important;
+  opacity: 1 !important;
+}

@@ -2178,9 +2178,9 @@ useEffect(() => {
   .camera-videos-section {
     flex: 1;
     display: grid;
-    // grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
     gap: 15px;
-    max-width: 25%;
+    max-width: 30%;
    
     padding: 10px;
   }

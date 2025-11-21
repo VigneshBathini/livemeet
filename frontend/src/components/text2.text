@@ -1,4 +1,12 @@
+//enhance layout of screenShare
 
+//here when user share with video with screenshare then opponnet only visible screenshare not visible video
+
+// Video.js
+
+//nov 14 last
+
+// here multi user video working when join with link
 import React, { useState, useRef, useEffect, useCallback, useContext } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import io from 'socket.io-client';
@@ -8,8 +16,6 @@ import { v4 as uuidv4 } from 'uuid';
 import { AuthContext } from './AuthContext';
 import SchedulePage from './SchedulePage';
 import JoinRoom from './JoinRoom';
-
-import axios from 'axios';
 
 const SIGNALING_SERVER_URL = 'http://localhost:3000';
 
@@ -67,10 +73,6 @@ const Video = ({ isExternal = false, meetingId, userEmail, userName: propUserNam
   const [alerts, setAlerts] = useState([]);
   const [showSchedulePage, setShowSchedulePage] = useState(false);
 
-
-  const isAnyScreenSharing = isScreenSharing ||
-    Object.values(connectionStatus).some(status => status?.streams?.screen === true);
-
   const lastTabSwitch = useRef(0);
   const renegotiationQueue = useRef({});
   const pendingRemoteStreams = useRef({});
@@ -93,104 +95,6 @@ const Video = ({ isExternal = false, meetingId, userEmail, userName: propUserNam
   const hasJoinedRef = useRef(false);
   const isJoiningRef = useRef(false);
 
-  const [currentVideoPage, setCurrentVideoPage] = useState(1);
-  const [totalVideoPages, setTotalVideoPages] = useState(1);
-
-
-  // Navigation functions for video pages
-  const navigateVideoPage = (direction) => {
-    if (!isAnyScreenSharing || totalVideoPages <= 1) return;
-
-    setCurrentVideoPage(prev => {
-      if (direction === 'next') {
-        return prev >= totalVideoPages ? 1 : prev + 1;
-      } else {
-        return prev <= 1 ? totalVideoPages : prev - 1;
-      }
-    });
-  };
-
-  // Update the useEffect that calculates video pages
-  // Update the useEffect that calculates video pages
-  useEffect(() => {
-    if (!isAnyScreenSharing) {
-      setCurrentVideoPage(1);
-      setTotalVideoPages(1);
-      return;
-    }
-
-    // Count ALL camera videos including local user
-    const cameraVideoCount = 1 + Object.keys(peers).length; // Local user + all peers
-
-    // Fixed number of videos per page/column
-    const VIDEOS_PER_PAGE = 3;
-
-    // Calculate total pages needed
-    const calculatedTotalPages = Math.ceil(cameraVideoCount / VIDEOS_PER_PAGE);
-    setTotalVideoPages(calculatedTotalPages);
-
-    // Ensure current page is within bounds
-    if (currentVideoPage > calculatedTotalPages) {
-      setCurrentVideoPage(calculatedTotalPages || 1);
-    }
-  }, [peers, isAnyScreenSharing, currentVideoPage]);
-
-  // Update the function to get videos for current page - include local video
-  const getCurrentPageCameraVideos = () => {
-    if (!isAnyScreenSharing || totalVideoPages <= 1) {
-      // Return all videos when no screen sharing or only one page
-      const allVideos = ['local', ...Object.keys(peers)];
-      return allVideos;
-    }
-
-    const VIDEOS_PER_PAGE = 3;
-    const startIndex = (currentVideoPage - 1) * VIDEOS_PER_PAGE;
-    const endIndex = startIndex + VIDEOS_PER_PAGE;
-
-    // Get ALL video IDs including local
-    const allVideoIds = ['local', ...Object.keys(peers)];
-    return allVideoIds.slice(startIndex, endIndex);
-  };
-
-  // Add this function to ensure all peer streams are properly managed
-  const ensurePeerStreams = useCallback(() => {
-    Object.keys(peersRef.current).forEach(userId => {
-      if (userId === 'local') return;
-
-      // Ensure peer video refs exist
-      if (!peerVideoRefs.current[userId]) {
-        peerVideoRefs.current[userId] = {};
-      }
-
-      // Check if there are pending streams for this peer
-      if (pendingRemoteStreams.current[userId]) {
-        Object.keys(pendingRemoteStreams.current[userId]).forEach(streamType => {
-          const stream = pendingRemoteStreams.current[userId][streamType];
-          if (stream && peerVideoRefs.current[userId]?.[streamType]) {
-            assignPeerStream(userId, streamType, stream);
-          }
-        });
-      }
-    });
-  }, []);
-
-  // Call this function whenever the current page changes
-  useEffect(() => {
-    if (isAnyScreenSharing) {
-      // Small delay to ensure DOM is updated
-      setTimeout(() => {
-        ensurePeerStreams();
-      }, 100);
-    }
-  }, [currentVideoPage, isAnyScreenSharing, ensurePeerStreams]);
-
-  // Also call when peers change
-  useEffect(() => {
-    if (isAnyScreenSharing) {
-      ensurePeerStreams();
-    }
-  }, [peers, isAnyScreenSharing, ensurePeerStreams]);
-
   const addAlert = useCallback((message, type = 'error') => {
     const id = Date.now();
     setAlerts((prev) => [...prev, { id, message, type }]);
@@ -206,8 +110,6 @@ const Video = ({ isExternal = false, meetingId, userEmail, userName: propUserNam
   }, []);
 
   const shortId = (id) => id.slice(0, 8);
-
-
 
   const cleanupScreenSharing = useCallback(async () => {
     logDebug('Starting comprehensive screen sharing cleanup...');
@@ -233,7 +135,7 @@ const Video = ({ isExternal = false, meetingId, userEmail, userName: propUserNam
         try {
           const screenSender = peer._pc.getSenders().find((s) => s.track?._type === 'screen');
           if (screenSender) {
-            // await screenSender.replaceTrack(null);
+            await screenSender.replaceTrack(null);
             logDebug(`Removed screen track from peer ${peerId}`);
             await renegotiatePeer(peer, peerId, 0, true);
           }
@@ -360,23 +262,6 @@ const Video = ({ isExternal = false, meetingId, userEmail, userName: propUserNam
 
   // }, [localStream, addAlert, logDebug]);
 
-
-  // Add this useEffect to handle local video stream assignment
-useEffect(() => {
-  if (isAnyScreenSharing && localStreamRef.current && userVideoRef.current.camera) {
-    // Small delay to ensure DOM is updated
-    setTimeout(() => {
-      const videoElement = userVideoRef.current.camera;
-      if (videoElement && !videoElement.srcObject && localStreamRef.current) {
-        videoElement.srcObject = localStreamRef.current;
-        videoElement.play().catch((err) => {
-          logDebug(`Error playing local stream after page change: ${err.message}`);
-        });
-        logDebug(`Reassigned local stream after page change to page ${currentVideoPage}`);
-      }
-    }, 50);
-  }
-}, [currentVideoPage, isAnyScreenSharing, logDebug]);
 
 
 
@@ -566,9 +451,8 @@ useEffect(() => {
 
     socketRef.current.on('connect', () => {
       logDebug('Connected to signaling server');
-      addAlert('Reconnected to server', 'success');
-
-      if (inRoom && roomId) {
+      addAlert('Connected to server.', 'success');
+      if (inRoom) {
         socketRef.current.emit('join-room', roomId, socketRef.current.id, userName, email, isHost);
       }
     });
@@ -591,46 +475,22 @@ useEffect(() => {
     });
 
     socketRef.current.on('room-users', (users) => {
-      logDebug(`room-users event: ${users.length} users`, users);
+      logDebug(`Room users: ${JSON.stringify(users)}`);
+      const currentUserId = socketRef.current.id;
 
-      const mySocketId = socketRef.current?.id;
+      // Find if there's already a host
+      const hasHost = users.some(u => u.isHost && u.userId !== currentUserId);
+      const isCurrentUserHost = users.find(u => u.userId === currentUserId)?.isHost;
 
-      users.forEach((u) => {
-        if (u.userId === mySocketId) {
-          // Update host status from server (source of truth)
-          if (u.isHost && !isHost) {
-            setIsHost(true);
-            addAlert('You are the Host!', 'success');
-          } else if (!u.isHost && isHost) {
-            setIsHost(false);
-          }
-          return;
-        }
-
-        // Update or create connectionStatus for peers
-        setConnectionStatus(prev => ({
-          ...prev,
-          [u.userId]: {
-            ...(prev[u.userId] || {}),
-            userName: u.userName,
-            userEmail: u.userEmail,
-            isHost: u.isHost,
-            status: prev[u.userId]?.status || 'connected',
-            streams: prev[u.userId]?.streams || { camera: false, screen: false }
-          }
-        }));
-      });
-
-      // Optional: Clean up disconnected users not in list
-      setConnectionStatus(prev => {
-        const updated = { ...prev };
-        Object.keys(updated).forEach(id => {
-          if (id !== mySocketId && !users.some(u => u.userId === id)) {
-            delete updated[id];
-          }
-        });
-        return updated;
-      });
+      if (!hasHost && !isCurrentUserHost) {
+        // No host exists → make current user host
+        setIsHost(true);
+        socketRef.current.emit('claim-host', { roomId });
+        addAlert('You are now the host (first in room).', 'success');
+        logDebug('Claimed host role');
+      } else if (isCurrentUserHost) {
+        setIsHost(true);
+      }
     });
     socketRef.current.on('user-joined', handleUserJoined);
     socketRef.current.on('offer', handleOffer);
@@ -715,7 +575,6 @@ useEffect(() => {
 
     return () => {
       socketRef.current.disconnect();
-      socketRef.current = null;
     };
   }, [roomId, inRoom, userName, email, isHost, logDebug, addAlert]);
 
@@ -799,58 +658,23 @@ useEffect(() => {
     };
   }, [participantControls, connectionStatus, logDebug, isHost, addAlert, roomId]);
 
-  // useEffect(() => {
-  //   console.log('12 :  const interval = setInterval')
-  //   const interval = setInterval(() => {
-  //     Object.keys(pendingRemoteStreams.current).forEach((userId) => {
-  //       const pending = Object.values(pendingRemoteStreams.current[userId] || {}).filter((s) => s);
-  //       if (pending.length > 0) {
-  //         logDebug(`Pending streams for ${userId}: ${pending.length}`);
-  //         Object.keys(pendingRemoteStreams.current[userId]).forEach((type) => {
-  //           if (pendingRemoteStreams.current[userId][type] && peerVideoRefs.current[userId]?.[type]) {
-  //             assignPeerStream(userId, type, pendingRemoteStreams.current[userId][type]);
-  //           }
-  //         });
-  //       }
-  //     });
-  //   }, 5000);
-  //   return () => clearInterval(interval);
-  // }, [logDebug]);
-
-  // Add this function or logic inside your Video component
-  // REPLACE THE BROKEN useEffect WITH THIS ONE
-  // useEffect(() => {
-  //   if (!isExternal || !meetingId || !email) return;
-
-  //   const checkAndClaimHost = async () => {
-  //     try {
-  //       const res = await axios.post('http://localhost:3000/api/claim-host', {
-  //         meetingId,
-  //         email
-  //       });
-
-
-
-  //       console.log('check host',res.data)
-
-  //       if (res.data.isHost) {
-  //         setIsHost(true);
-
-  //         socketRef.current?.emit('claim-host', { roomId: meetingId });
-  //         addAlert('You are now the Host!', 'success');
-  //         logDebug('Host role claimed successfully (late join)');
-  //       }
-  //     } catch (err) {
-  //       console.log('Not the creator or server error');
-  //     }
-  //   };
-
-  //   // Check immediately + every 3 seconds (in case participants joined first)
-  //   checkAndClaimHost();
-  //   const interval = setInterval(checkAndClaimHost, 3000);
-
-  //   return () => clearInterval(interval);
-  // }, []);
+  useEffect(() => {
+    console.log('12 :  const interval = setInterval')
+    const interval = setInterval(() => {
+      Object.keys(pendingRemoteStreams.current).forEach((userId) => {
+        const pending = Object.values(pendingRemoteStreams.current[userId] || {}).filter((s) => s);
+        if (pending.length > 0) {
+          logDebug(`Pending streams for ${userId}: ${pending.length}`);
+          Object.keys(pendingRemoteStreams.current[userId]).forEach((type) => {
+            if (pendingRemoteStreams.current[userId][type] && peerVideoRefs.current[userId]?.[type]) {
+              assignPeerStream(userId, type, pendingRemoteStreams.current[userId][type]);
+            }
+          });
+        }
+      });
+    }, 5000);
+    return () => clearInterval(interval);
+  }, [logDebug]);
 
   const checkPermissions = async () => {
     try {
@@ -858,7 +682,7 @@ useEffect(() => {
       stream.getTracks().forEach((track) => track.stop());
       return true;
     } catch (err) {
-      logDebug(`Permission che ck failed: ${err.name} - ${err.message}`);
+      logDebug(`Permission check failed: ${err.name} - ${err.message}`);
       addAlert('Camera/microphone permissions denied.', 'error');
       return false;
     }
@@ -945,109 +769,101 @@ useEffect(() => {
   };
 
   const toggleVideo = async () => {
-    if (!localStreamRef.current) {
-      logDebug("No local stream available");
-      return;
-    }
+    if (localStreamRef.current) {
+      const videoTrack = localStreamRef.current.getVideoTracks()[0];
+      if (videoTrack) {
+        videoTrack.enabled = !videoTrack.enabled;
+        setIsVideoOn(videoTrack.enabled);
+        logDebug(`Camera track ${videoTrack.enabled ? 'enabled' : 'disabled'}`);
+        addAlert(`Camera ${videoTrack.enabled ? 'enabled' : 'disabled'}`, 'info');
 
-    const videoTrack = localStreamRef.current.getVideoTracks()[0];
-
-    if (videoTrack) {
-      const willEnable = !videoTrack.enabled;
-      videoTrack.enabled = willEnable;
-      setIsVideoOn(willEnable);
-
-      logDebug(`Video track ${willEnable ? 'enabled' : 'disabled'} locally`);
-      addAlert(`Camera ${willEnable ? 'turned on' : 'turned off'}`, 'info');
-
-      // Update all peers: DO NOT use replaceTrack(null) → instead just enable/disable
-      Object.values(peersRef.current).forEach((peer) => {
-        if (!peer || !peer._pc) return;
-
-        const sender = peer._pc.getSenders().find(
-          (s) => s.track?.kind === 'video' && s.track?._type === 'camera'
-        );
-
-        if (sender && sender.track) {
-          sender.track.enabled = willEnable;
-          logDebug(`Updated remote peer video track enabled = ${willEnable}`);
-        }
-      });
-
-      // Notify others (for UI sync)
-      if (socketRef.current?.connected) {
-        socketRef.current.emit('toggle-media', {
-          roomId,
-          userId: socketRef.current.id,
-          video: willEnable,
-          audio: isAudioOn,
-        });
-      }
-    } else if (isVideoOn === false) {
-      // User wants to TURN ON video but no track exists → reacquire
-      try {
-        const newStream = await navigator.mediaDevices.getUserMedia({
-          video: { width: { ideal: 1280 }, height: { ideal: 720 } },
-          audio: false,
-        });
-
-        const newVideoTrack = newStream.getVideoTracks()[0];
-        newVideoTrack._type = 'camera';
-        newVideoTrack.enabled = true;
-
-        // Add to localStreamRef
-        localStreamRef.current.addTrack(newVideoTrack);
-        setLocalStream(localStreamRef.current);
-        setIsVideoOn(true);
-
-        // Add to all peers
         Object.values(peersRef.current).forEach((peer) => {
-          if (peer && peer._pc) {
-            peer._pc.addTrack(newVideoTrack, localStreamRef.current);
+          const sender = peer._pc.getSenders().find((s) => s.track?.kind === 'video' && !s.track.label?.includes('screen'));
+          if (sender) {
+            sender.replaceTrack(videoTrack.enabled ? videoTrack : null).catch((err) => {
+              logDebug(`Error replacing camera track for peer ${peer._id || 'unknown'}: ${err.message}`);
+              addAlert('Failed to update camera stream.', 'error');
+            });
+            renegotiatePeer(peer, peer._id);
           }
         });
 
-        // Renegotiate all peers
-        setTimeout(() => {
-          Object.values(peersRef.current).forEach((peer, userId) => {
-            renegotiatePeer(peer, userId);
+        if (!isHost && socketRef.current?.connected) {
+          socketRef.current.emit('toggle-media', {
+            roomId,
+            userId: socketRef.current.id,
+            video: videoTrack.enabled,
+            audio: isAudioOn,
           });
-        }, 500);
+        }
+      } else if (isVideoOn) {
+        try {
+          const newStream = await navigator.mediaDevices.getUserMedia({
+            video: { width: { ideal: 1280 }, height: { ideal: 720 } },
+            audio: false,
+          });
+          const newVideoTrack = newStream.getVideoTracks()[0];
+          newVideoTrack._type = 'camera';
+          localStreamRef.current = newStream;
+          setLocalStream(newStream);
+          setIsVideoOn(true);
+          logDebug('Reacquired camera stream successfully.');
+          addAlert('Camera stream reacquired.', 'success');
 
-        addAlert("Camera turned on", "success");
-      } catch (err) {
-        logDebug("Failed to reacquire camera: " + err.message);
-        addAlert("Failed to turn on camera", "error");
+          Object.values(peersRef.current).forEach((peer) => {
+            const sender = peer._pc.getSenders().find((s) => s.track?.kind === 'video' && !s.track.label?.includes('screen'));
+            if (sender) {
+              sender.replaceTrack(newVideoTrack).catch((err) => {
+                logDebug(`Error replacing new camera track for peer ${peer._id || 'unknown'}: ${err.message}`);
+                addAlert('Failed to update camera stream.', 'error');
+              });
+              renegotiatePeer(peer, peer._id);
+            }
+          });
+
+          if (userVideoRef.current?.camera) {
+            userVideoRef.current.camera.srcObject = newStream;
+            userVideoRef.current.camera.play().catch((err) => {
+              logDebug(`Error playing reacquired camera stream: ${err.message}`);
+              addAlert('Failed to play reacquired camera stream.', 'error');
+            });
+          }
+
+          if (!isHost && socketRef.current?.connected) {
+            socketRef.current.emit('toggle-media', {
+              roomId,
+              userId: socketRef.current.id,
+              video: true,
+              audio: isAudioOn,
+            });
+          }
+        } catch (err) {
+          logDebug(`Error reacquiring camera stream: ${err.message}`);
+          addAlert('Failed to reacquire camera stream.', 'error');
+        }
       }
     }
   };
 
   const toggleAudio = () => {
-    if (!localStreamRef.current) return;
+    if (localStreamRef.current) {
+      const audioTrack = localStreamRef.current.getAudioTracks()[0];
+      if (audioTrack) {
+        audioTrack.enabled = !audioTrack.enabled;
+        setIsAudioOn(audioTrack.enabled);
+        logDebug(`Audio track ${audioTrack.enabled ? 'enabled' : 'disabled'}`);
+        addAlert(`Audio ${audioTrack.enabled ? 'enabled' : 'disabled'}`, 'info');
 
-    const audioTrack = localStreamRef.current.getAudioTracks()[0];
-    if (!audioTrack) return;
-
-    const willEnable = !audioTrack.enabled;
-    audioTrack.enabled = willEnable;
-    setIsAudioOn(willEnable);
-
-    // Sync across all peers
-    Object.values(peersRef.current).forEach((peer) => {
-      const sender = peer._pc.getSenders().find(s => s.track?.kind === 'audio');
-      if (sender?.track) {
-        sender.track.enabled = willEnable;
+        if (!isHost && socketRef.current?.connected) {
+          socketRef.current.emit('toggle-media', {
+            roomId,
+            userId: socketRef.current.id,
+            video: isVideoOn,
+            audio: audioTrack.enabled,
+          });
+        }
       }
-    });
-
-    addAlert(`Microphone ${willEnable ? 'unmuted' : 'muted'}`, 'info');
-
-    socketRef.current?.emit('toggle-media', {
-      roomId,
-      userId: socketRef.current.id,
-      video: isVideoOn,
-      audio: willEnable,
-    });
+    }
   };
 
   const toggleScreenShare = async () => {
@@ -1087,7 +903,7 @@ useEffect(() => {
             try {
               const existingScreenSender = peer._pc.getSenders().find((s) => s.track?._type === 'screen');
               if (existingScreenSender) {
-                // await existingScreenSender.replaceTrack(null);
+                await existingScreenSender.replaceTrack(null);
                 logDebug(`Cleaned up existing screen track for peer ${peerId}`);
                 await new Promise((resolve) => setTimeout(resolve, 100));
               }
@@ -1336,33 +1152,25 @@ useEffect(() => {
       }, 100);
     });
 
-   peer.on('stream', (stream) => {
-  logDebug(`Received stream from ${userId}, tracks: ${stream.getTracks().map((t) => `${t.kind}:${t.label || t.id} (type: ${t._type || 'unknown'})`).join(', ')}`);
-  
-  if (!peersRef.current[userId]) {
-    peersRef.current[userId] = { remoteStreams: {} };
-  }
-  
-  // Store the stream for later use
-  if (!peersRef.current[userId]._remoteStreams) {
-    peersRef.current[userId]._remoteStreams = {};
-  }
+    peer.on('stream', (stream) => {
+      logDebug(`Received stream from ${userId}, tracks: ${stream.getTracks().map((t) => `${t.kind}:${t.label || t.id} (type: ${t._type || 'unknown'})`).join(', ')}`);
+      if (!peersRef.current[userId]) {
+        peersRef.current[userId] = { remoteStreams: {} };
+      }
+      pendingRemoteStreams.current[userId] = pendingRemoteStreams.current[userId] || {
+        camera: null,
+        screen: null,
+        audio: null,
+      };
+      if (!videoStreamCount.current[userId]) videoStreamCount.current[userId] = 0;
 
-  pendingRemoteStreams.current[userId] = pendingRemoteStreams.current[userId] || {
-    camera: null,
-    screen: null,
-    audio: null,
-  };
-  if (!videoStreamCount.current[userId]) videoStreamCount.current[userId] = 0;
-
-  stream.getTracks().forEach((track) => {
-    logDebug(`Processing track ${track.id}: ${track.kind} (enabled: ${track.enabled}, type: ${track._type || 'unknown'})`);
-    if (track.kind === 'audio') {
-      if (track.enabled) {
-        const audioStream = new MediaStream([track]);
-        pendingRemoteStreams.current[userId].audio = audioStream;
-        peersRef.current[userId]._remoteStreams.audio = audioStream;
-        logDebug(`Stored audio stream for ${userId} (track: ${track.id})`);
+      stream.getTracks().forEach((track) => {
+        logDebug(`Processing track ${track.id}: ${track.kind} (enabled: ${track.enabled}, type: ${track._type || 'unknown'})`);
+        if (track.kind === 'audio') {
+          if (track.enabled) {
+            const audioStream = new MediaStream([track]);
+            pendingRemoteStreams.current[userId].audio = audioStream;
+            logDebug(`Stored audio stream for ${userId} (track: ${track.id})`);
             setTimeout(() => {
               const videoElements = [];
               if (peerVideoRefs.current[userId]?.camera) {
@@ -1382,25 +1190,24 @@ useEffect(() => {
             }, 200);
           }
         } else if (track.kind === 'video') {
-      videoStreamCount.current[userId]++;
-      const settings = track.getSettings ? track.getSettings() : {};
-      let isScreen =
-        track._type === 'screen' ||
-        settings.displaySurface ||
-        track.label?.toLowerCase().includes('screen') ||
-        track.id.includes('screen') ||
-        (settings.width >= 1280 && settings.height >= 720 && !settings.facingMode);
-      if (!isScreen && videoStreamCount.current[userId] > 1) {
-        isScreen = true;
-      }
-      const streamType = isScreen ? 'screen' : 'camera';
-      logDebug(`Classified track ${track.id} as '${streamType}'`);
-      const singleTrackStream = new MediaStream([track]);
-      pendingRemoteStreams.current[userId][streamType] = singleTrackStream;
-      peersRef.current[userId]._remoteStreams[streamType] = singleTrackStream;
-      assignPeerStream(userId, streamType, singleTrackStream);
-    }
-  });
+          videoStreamCount.current[userId]++;
+          const settings = track.getSettings ? track.getSettings() : {};
+          let isScreen =
+            track._type === 'screen' ||
+            settings.displaySurface ||
+            track.label?.toLowerCase().includes('screen') ||
+            track.id.includes('screen') ||
+            (settings.width >= 1280 && settings.height >= 720 && !settings.facingMode);
+          if (!isScreen && videoStreamCount.current[userId] > 1) {
+            isScreen = true;
+          }
+          const streamType = isScreen ? 'screen' : 'camera';
+          logDebug(`Classified track ${track.id} as '${streamType}'`);
+          const singleTrackStream = new MediaStream([track]);
+          pendingRemoteStreams.current[userId][streamType] = singleTrackStream;
+          assignPeerStream(userId, streamType, singleTrackStream);
+        }
+      });
 
       setTimeout(() => {
         if (pendingRemoteStreams.current[userId]) {
@@ -1619,29 +1426,70 @@ useEffect(() => {
   const handleToggleMedia = (data) => {
     logDebug(`Received toggle-media from host for ${data.userId}: video=${data.video}, audio=${data.audio}`);
     if (data.userId === socketRef.current.id) {
-      if (data.video !== undefined && localStreamRef.current) {
-        const videoTrack = localStreamRef.current.getVideoTracks()[0];
-        if (videoTrack) {
-          videoTrack.enabled = data.video;
-          setIsVideoOn(data.video);
-        } else if (data.video) {
-          // Reacquire if forced ON
-          navigator.mediaDevices.getUserMedia({ video: true }).then(stream => {
-            const track = stream.getVideoTracks()[0];
-            track._type = 'camera';
-            localStreamRef.current.addTrack(track);
-            setLocalStream(localStreamRef.current);
-            setIsVideoOn(true);
-            Object.values(peersRef.current).forEach(p => p._pc?.addTrack(track));
-            renegotiatePeer();
-          });
+      if (localStreamRef.current) {
+        if (data.video !== undefined) {
+          const videoTrack = localStreamRef.current.getVideoTracks()[0];
+          if (videoTrack) {
+            videoTrack.enabled = data.video;
+            setIsVideoOn(data.video);
+            logDebug(`Camera track set to ${data.video ? 'enabled' : 'disabled'} by host`);
+            addAlert(`Camera ${data.video ? 'enabled' : 'disabled'} by host.`, 'info');
+            Object.values(peersRef.current).forEach((peer) => {
+              const sender = peer._pc.getSenders().find((s) => s.track?.kind === 'video' && !s.track.label?.includes('screen'));
+              if (sender) {
+                sender.replaceTrack(data.video ? videoTrack : null).catch((err) => {
+                  logDebug(`Error updating camera track for peer ${peer._id || 'unknown'}: ${err.message}`);
+                  addAlert('Failed to update camera stream.', 'error');
+                });
+                renegotiatePeer(peer, peer._id);
+              }
+            });
+          } else if (data.video) {
+            navigator.mediaDevices.getUserMedia({
+              video: { width: { ideal: 1280 }, height: { ideal: 720 } },
+              audio: false,
+            })
+              .then((newStream) => {
+                const newVideoTrack = newStream.getVideoTracks()[0];
+                newVideoTrack._type = 'camera';
+                localStreamRef.current = newStream;
+                setLocalStream(newStream);
+                setIsVideoOn(true);
+                logDebug('Reacquired camera stream for host toggle.');
+                addAlert('Camera stream reacquired.', 'success');
+                Object.values(peersRef.current).forEach((peer) => {
+                  const sender = peer._pc.getSenders().find((s) => s.track?.kind === 'video' && !s.track.label?.includes('screen'));
+                  if (sender) {
+                    sender.replaceTrack(newVideoTrack).catch((err) => {
+                      logDebug(`Error replacing new camera track for peer ${peer._id || 'unknown'}: ${err.message}`);
+                      addAlert('Failed to update camera stream.', 'error');
+                    });
+                    renegotiatePeer(peer, peer._id);
+                  }
+                });
+                if (userVideoRef.current?.camera) {
+                  userVideoRef.current.camera.srcObject = newStream;
+                  userVideoRef.current.camera.play().catch((err) => {
+                    logDebug(`Error playing reacquired camera stream: ${err.message}`);
+                    addAlert('Failed to play reacquired camera stream.', 'error');
+                  });
+                }
+              })
+              .catch((err) => {
+                logDebug(`Error reacquiring camera stream: ${err.message}`);
+                addAlert('Failed to reacquire camera stream.', 'error');
+              });
+          }
         }
-      }
-
-      if (data.audio !== undefined && localStreamRef.current) {
-        const audioTrack = localStreamRef.current.getAudioTracks()[0];
-        if (audioTrack) audioTrack.enabled = data.video;
-        setIsAudioOn(data.audio);
+        if (data.audio !== undefined) {
+          const audioTrack = localStreamRef.current.getAudioTracks()[0];
+          if (audioTrack) {
+            audioTrack.enabled = data.audio;
+            setIsAudioOn(data.audio);
+            logDebug(`Audio track set to ${data.audio ? 'enabled' : 'disabled'} by host`);
+            addAlert(`Audio ${data.audio ? 'enabled' : 'disabled'} by host.`, 'info');
+          }
+        }
       }
     }
   };
@@ -1758,221 +1606,153 @@ useEffect(() => {
                 {!isExternal && <button onClick={logout} title="Log Out">Log Out</button>}
               </div>
             </header>
-
             <div className="main-content">
               <div className="video-container">
-                <div className={`video-gallery ${isAnyScreenSharing ? 'has-screen-share' : 'no-screen-share'}`}>
 
-                  {/* Screen Share + Camera Layout */}
-                  <div className="video-layout-container">
-                    {/* Screen Share Section - Left Side when active */}
-                    {isAnyScreenSharing && (
-                      <div className="screen-share-section">
-                        {/* Remote screen shares */}
-                        {Object.keys(peers).map((userId) => {
-                          const status = connectionStatus[userId];
-                          if (status?.streams?.screen) {
-                            return (
-                              <div className="video-item screen-share-item" key={`${userId}-screen`}>
-                                <div className="video-wrapper screen-share-video">
-                                  <video
-                                    ref={(el) => {
-                                      if (el) {
-                                        peerVideoRefs.current[userId] = peerVideoRefs.current[userId] || {};
-                                        peerVideoRefs.current[userId].screen = el;
-                                        if (pendingRemoteStreams.current[userId]?.screen) {
-                                          el.srcObject = pendingRemoteStreams.current[userId].screen;
-                                          el.play().catch(() => { });
-                                          pendingRemoteStreams.current[userId].screen = null;
-                                        }
-                                      }
-                                    }}
-                                    autoPlay
-                                    playsInline
-                                    className="video-element screen-element"
-                                  />
-                                  <div className="video-overlay">
-                                    <span className="video-name">
-                                      {status?.userName || `Participant (${shortId(userId)})`} - Screen Share
-                                    </span>
-                                    <div className="video-status">
-                                      <i className="fas fa-desktop"></i>
-                                      <span>Screen Sharing</span>
-                                    </div>
-                                  </div>
-                                </div>
-                              </div>
-                            );
-                          }
-                          return null;
-                        })}
 
-                        {/* Local screen share */}
-                        {isScreenSharing && (
-                          <div className="video-item screen-share-item local-screen-share">
-                            <div className="video-wrapper screen-share-video">
-                              <video
-                                ref={(el) => (userVideoRef.current.screen = el)}
-                                autoPlay
-                                muted
-                                playsInline
-                                className="video-element screen-element"
-                              />
-                              <div className="video-overlay">
-                                <span className="video-name">You ({userName}) - Screen Share</span>
-                                <div className="video-status">
-                                  <i className="fas fa-desktop"></i>
-                                  <span>You are sharing screen</span>
-                                </div>
-                              </div>
-                            </div>
-                          </div>
-                        )}
-                      </div>
-                    )}
-
-                    
-{/* Camera Videos Section - Right Side */}
-<div className="camera-videos-section">
-  {/* Render ALL videos from getCurrentPageCameraVideos */}
-  {getCurrentPageCameraVideos().map((videoId) => {
-    if (videoId === 'local') {
-      // Local user camera - FIXED: Ensure local video is always properly assigned
+                <div className="video-gallery">
+  {/* First, render all screen shares prominently */}
+  {Object.keys(peers).map((userId) => {
+    const status = connectionStatus[userId];
+    if (status?.streams?.screen) {
       return (
-        <div className="video-item local-video" key="local">
-          <div className="video-wrapper">
+        <div className="video-item screen-share-item" key={`${userId}-screen`}>
+          <div className="video-wrapper screen-share-video">
             <video
               ref={(el) => {
-                if (el && userVideoRef.current.camera !== el) {
-                  userVideoRef.current.camera = el;
-                  logDebug(`Local video element READY on page ${currentVideoPage}`);
-                  
-                  // Always ensure local stream is assigned
-                  if (localStreamRef.current && !el.srcObject) {
-                    el.srcObject = localStreamRef.current;
-                    el.play().catch((err) => {
-                      logDebug(`Error playing local stream on page ${currentVideoPage}: ${err.message}`);
-                    });
-                    logDebug(`Assigned local stream to video element on page ${currentVideoPage}`);
-                  }
-                }
-              }}
-              autoPlay
-              muted
-              playsInline
-              className="video-element"
-            />
-            <div className="video-overlay">
-              <span className="video-name">You ({userName})</span>
-              <div className="video-status">
-                {isVideoOn ? <i className="fas fa-video"></i> : <i className="fas fa-video-slash"></i>}
-                {isAudioOn ? <i className="fas fa-microphone"></i> : <i className="fas fa-microphone-slash"></i>}
-              </div>
-            </div>
-          </div>
-        </div>
-      );
-    } else {
-      // Remote participant camera
-      const userId = videoId;
-      const status = connectionStatus[userId];
-      const controls = participantControls[userId];
-      
-      // Ensure peer refs exist
-      if (!peerVideoRefs.current[userId]) {
-        peerVideoRefs.current[userId] = {};
-      }
-
-      return (
-        <div className="video-item" key={`${userId}-camera`}>
-          <div className="video-wrapper">
-            <video
-              ref={(el) => {
-                if (el && peerVideoRefs.current[userId].camera !== el) {
-                  peerVideoRefs.current[userId].camera = el;
-                  logDebug(`Video element READY for ${shortId(userId)} on page ${currentVideoPage}`);
-                  
-                  // Immediately assign stream if available
-                  if (pendingRemoteStreams.current[userId]?.camera) {
-                    el.srcObject = pendingRemoteStreams.current[userId].camera;
+                if (el) {
+                  peerVideoRefs.current[userId] = peerVideoRefs.current[userId] || {};
+                  peerVideoRefs.current[userId].screen = el;
+                  if (pendingRemoteStreams.current[userId]?.screen) {
+                    el.srcObject = pendingRemoteStreams.current[userId].screen;
                     el.play().catch(() => { });
-                    logDebug(`Assigned PENDING camera stream to ${shortId(userId)} on page ${currentVideoPage}`);
-                    pendingRemoteStreams.current[userId].camera = null;
-                  } else {
-                    // Check if peer has an active stream
-                    const peer = peersRef.current[userId];
-                    if (peer && peer._remoteStreams?.camera) {
-                      el.srcObject = peer._remoteStreams.camera;
-                      el.play().catch(() => { });
-                      logDebug(`Assigned existing camera stream to ${shortId(userId)} on page ${currentVideoPage}`);
-                    }
+                    pendingRemoteStreams.current[userId].screen = null;
                   }
                 }
               }}
               autoPlay
               playsInline
-              muted={false}
-              className="video-element"
-              style={{ background: '#000' }}
+              className="video-element screen-element"
             />
             <div className="video-overlay">
               <span className="video-name">
-                {status?.userName || `Participant (${shortId(userId)})`}
-                {status?.streams?.screen && " 🔄"}
+                {status?.userName || `Participant (${shortId(userId)})`} - Screen Share
               </span>
               <div className="video-status">
-                <span>{status?.status || 'connecting'}</span>
-                {isHost && controls && (
-                  <div className="proctor-controls">
-                    <button onClick={() => toggleParticipantMedia(userId, 'video')}>
-                      <i className={controls.video ? 'fas fa-video' : 'fas fa-video-slash'}></i>
-                    </button>
-                    <button onClick={() => toggleParticipantMedia(userId, 'audio')}>
-                      <i className={controls.audio ? 'fas fa-microphone' : 'fas fa-microphone-slash'}></i>
-                    </button>
-                    <button onClick={() => toggleParticipantMedia(userId, 'proctor')}>
-                      <i className={controls.proctor ? 'fas fa-user-check' : 'fas fa-user'}></i>
-                    </button>
-                  </div>
-                )}
+                <i className="fas fa-desktop"></i>
+                <span>Screen Sharing</span>
               </div>
             </div>
           </div>
         </div>
       );
     }
+    return null;
   })}
-  
-  {/* Slides indicator */}
-  {isAnyScreenSharing && totalVideoPages > 1 && (
-    <div className="slides-indicator">
-      <button 
-        onClick={() => navigateVideoPage('prev')}
-        className="slide-nav-btn"
-        title="Previous page"
-      >
-        <i className="fas fa-chevron-left"></i>
-      </button>
-      
-      <span className="slide-counter">
-        &lt; {currentVideoPage} / {totalVideoPages} &gt;
-      </span>
-      
-      <button 
-        onClick={() => navigateVideoPage('next')}
-        className="slide-nav-btn"
-        title="Next page"
-      >
-        <i className="fas fa-chevron-right"></i>
-      </button>
+
+  {/* Then render local user screen share if active */}
+  {isScreenSharing && (
+    <div className="video-item screen-share-item local-screen-share">
+      <div className="video-wrapper screen-share-video">
+        <video
+          ref={(el) => (userVideoRef.current.screen = el)}
+          autoPlay
+          muted
+          playsInline
+          className="video-element screen-element"
+        />
+        <div className="video-overlay">
+          <span className="video-name">You ({userName}) - Screen Share</span>
+          <div className="video-status">
+            <i className="fas fa-desktop"></i>
+            <span>You are sharing screen</span>
+          </div>
+        </div>
+      </div>
     </div>
   )}
-</div>
-                  </div>
-                </div>
-              </div>
 
-              {/* Chat Panel */}
+  {/* Then render local user camera */}
+  <div className="video-item local-video">
+    <div className="video-wrapper">
+      <video
+        ref={(el) => (userVideoRef.current.camera = el)}
+        autoPlay
+        muted
+        playsInline
+        className="video-element"
+      />
+      <div className="video-overlay">
+        <span className="video-name">You ({userName}) - Camera</span>
+        <div className="video-status">
+          {isVideoOn ? <i className="fas fa-video"></i> : <i className="fas fa-video-slash"></i>}
+          {isAudioOn ? <i className="fas fa-microphone"></i> : <i className="fas fa-microphone-slash"></i>}
+        </div>
+      </div>
+    </div>
+  </div>
+
+  {/* Render ALL participants' camera videos - INCLUDING those who are screen sharing */}
+  {Object.keys(peers).map((userId) => {
+    const status = connectionStatus[userId];
+    const controls = participantControls[userId];
+
+    if (!peerVideoRefs.current[userId]) {
+      peerVideoRefs.current[userId] = {};
+    }
+
+    return (
+      <div className="video-item" key={`${userId}-camera`}>
+        <div className="video-wrapper">
+          <video
+            ref={(el) => {
+              if (el && peerVideoRefs.current[userId].camera !== el) {
+                peerVideoRefs.current[userId].camera = el;
+                logDebug(`Video element READY for ${shortId(userId)}`);
+
+                if (pendingRemoteStreams.current[userId]?.camera) {
+                  el.srcObject = pendingRemoteStreams.current[userId].camera;
+                  el.play().catch(() => { });
+                  logDebug(`Assigned PENDING camera stream to ${shortId(userId)}`);
+                  pendingRemoteStreams.current[userId].camera = null;
+                }
+              }
+            }}
+            autoPlay
+            playsInline
+            muted={false}
+            className="video-element"
+            style={{ background: '#000' }}
+          />
+          <div className="video-overlay">
+            <span className="video-name">
+              {status?.userName || `Participant (${shortId(userId)})`} - Camera
+              {status?.streams?.screen && " (Also Sharing Screen)"}
+            </span>
+            <div className="video-status">
+              <span>{status?.status || 'connecting'}</span>
+
+              {isHost && controls && (
+                <div className="proctor-controls">
+                  <button onClick={() => toggleParticipantMedia(userId, 'video')}>
+                    <i className={controls.video ? 'fas fa-video' : 'fas fa-video-slash'}></i>
+                  </button>
+                  <button onClick={() => toggleParticipantMedia(userId, 'audio')}>
+                    <i className={controls.audio ? 'fas fa-microphone' : 'fas fa-microphone-slash'}></i>
+                  </button>
+                  <button onClick={() => toggleParticipantMedia(userId, 'proctor')}>
+                    <i className={controls.proctor ? 'fas fa-user-check' : 'fas fa-user'}></i>
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  })}
+</div>
+              </div>
               <div className={`side-panel ${showChat ? 'open' : ''}`}>
                 <div className="chat-container">
                   <div className="chat-header">
@@ -2007,11 +1787,11 @@ useEffect(() => {
                 </div>
               </div>
             </div>
-
             <footer className="bottom-bar">
               <div className="controls">
                 <button
                   onClick={toggleVideo}
+                  disabled={isHost ? false : !isVideoOn}
                   className={isVideoOn ? '' : 'disabled'}
                   title={isVideoOn ? 'Turn off camera' : 'Turn on camera'}
                 >
@@ -2019,6 +1799,7 @@ useEffect(() => {
                 </button>
                 <button
                   onClick={toggleAudio}
+                  disabled={isHost ? false : !isAudioOn}
                   className={isAudioOn ? '' : 'disabled'}
                   title={isAudioOn ? 'Mute' : 'Unmute'}
                 >
@@ -2036,7 +1817,6 @@ useEffect(() => {
                 </button>
               </div>
             </footer>
-
             {showDebug && (
               <div className="debug-panel">
                 <h4>Debug Log</h4>
@@ -2049,6 +1829,8 @@ useEffect(() => {
             )}
           </div>
         )}
+
+
 
         <style>
           {`:root {
@@ -2063,11 +1845,13 @@ useEffect(() => {
     --info: #00b7eb;
     --border: #2e2e4b;
   }
+
   * {
     margin: 0;
     padding: 0;
     box-sizing: border-box;
   }
+
   .app-container {
     font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
     height: 100vh;
@@ -2078,7 +1862,15 @@ useEffect(() => {
     overflow: hidden;
   }
 
-  /* Alert styles remain the same */
+  .error-message {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 100%;
+    font-size: 18px;
+    color: var(--error);
+  }
+
   .alert-container {
     position: fixed;
     top: 16px;
@@ -2087,6 +1879,7 @@ useEffect(() => {
     max-width: 320px;
     width: 90%;
   }
+
   .alert {
     padding: 10px 14px;
     margin-bottom: 8px;
@@ -2101,10 +1894,12 @@ useEffect(() => {
     background: var(--secondary-bg);
     border: 1px solid var(--border);
   }
+
   .alert-error { border-color: var(--error); }
   .alert-success { border-color: var(--success); }
   .alert-info { border-color: var(--info); }
   .alert-warning { border-color: var(--warning); }
+
   .alert-close {
     background: none;
     border: none;
@@ -2114,306 +1909,93 @@ useEffect(() => {
     padding: 0 8px;
     opacity: 0.7;
   }
-  .alert-close:hover { opacity: 1; }
+
+  .alert-close:hover {
+    opacity: 1;
+  }
+
   @keyframes fadeIn {
     from { opacity: 0; transform: translateY(-10px); }
     to { opacity: 1; transform: translateY(0); }
   }
 
-  /* Main Layout Container */
-  .video-layout-container {
-    display: flex;
-    gap: 20px;
-    height: 100%;
-    padding: 20px;
-  }
+  /* Enhanced screen sharing styles */
+.screen-share-item {
+  grid-column: 1 / -1 !important;
+  max-width: 90% !important;
+  margin: 0 auto 20px auto !important;
+  background: #000 !important;
+  border: 2px solid var(--accent-blue) !important;
+  border-radius: 12px !important;
+  box-shadow: 0 4px 20px rgba(0, 183, 235, 0.3) !important;
+}
 
-  /* Screen Share Section - Left Side */
-  .screen-share-section {
-    flex: 1;
-    display: flex;
-    flex-direction: column;
-    gap: 20px;
-    max-width: 70%;
-  }
+.screen-share-video {
+  aspect-ratio: 16 / 9 !important;
+  max-height: 70vh !important;
+  width: 100% !important;
+}
 
+.screen-element {
+  object-fit: contain !important;
+  background: #000 !important;
+  border-radius: 8px !important;
+}
+
+.local-screen-share {
+  border-color: var(--success) !important;
+}
+
+.local-screen-share .video-overlay {
+  background: linear-gradient(to top, rgba(0, 200, 100, 0.3), transparent) !important;
+}
+
+.screen-share-item .video-overlay {
+  background: linear-gradient(to top, rgba(0, 183, 235, 0.3), transparent) !important;
+  padding: 12px !important;
+}
+
+.screen-share-item .video-name {
+  font-size: 16px !important;
+  font-weight: 600 !important;
+  color: var(--accent-blue) !important;
+}
+
+.screen-share-item .video-status {
+  font-size: 14px !important;
+  color: var(--text-color) !important;
+}
+
+.screen-share-item .video-status i {
+  margin-right: 8px !important;
+}
+
+/* Ensure regular videos don't take too much space when screen share is active */
+.video-gallery:has(.screen-share-item) .video-item:not(.screen-share-item) {
+  max-width: 300px !important;
+  grid-column: span 1 !important;
+}
+
+/* Responsive design for screen shares */
+@media (max-width: 1024px) {
+  .screen-share-video {
+    max-height: 50vh !important;
+  }
+}
+
+@media (max-width: 768px) {
+  .video-gallery:has(.screen-share-item) .video-item:not(.screen-share-item) {
+    max-width: 200px !important;
+  }
+  
   .screen-share-item {
-    width: 100%;
-    background: #000;
-    border: 3px solid var(--accent-blue);
-    border-radius: 12px;
-    box-shadow: 0 8px 32px rgba(0, 183, 235, 0.4);
-    overflow: hidden;
+    max-width: 95% !important;
   }
 
   .screen-share-video {
-    aspect-ratio: 16 / 9;
-    width: 100%;
+    max-height: 40vh !important;
   }
-
-  .screen-element {
-    object-fit: contain;
-    background: #000;
-    border-radius: 8px;
-    width: 100%;
-    height: 100%;
-  }
-
-  .local-screen-share {
-    border-color: var(--success);
-  }
-
-  .screen-share-item .video-overlay {
-    background: linear-gradient(to top, rgba(0, 183, 235, 0.3), transparent);
-    padding: 12px;
-  }
-
-  .screen-share-item .video-name {
-    font-size: 16px;
-    font-weight: 600;
-    color: var(--accent-blue);
-  }
-
-  /* Camera Videos Section - Right Side */
-  .camera-videos-section {
-    flex: 1;
-    display: grid;
-    // grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-    gap: 15px;
-    max-width: 25%;
-   
-    padding: 10px;
-  }
-
-  /* When NO screen sharing - Full screen camera layout */
-  .video-gallery.no-screen-share .video-layout-container {
-    display: block;
-  }
-
-  .video-gallery.no-screen-share .camera-videos-section {
-    max-width: 100%;
-    grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-    gap: 20px;
-    padding: 0;
-  }
-
-  /* When screen sharing IS active - Side by side layout */
-.video-gallery.has-screen-share .camera-videos-section {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
 }
-
-  /* Video item common styles */
-  .video-item {
-    background: #1c1c38;
-    border-radius: 10px;
-    overflow: hidden;
-    transition: transform 0.2s;
-    position: relative;
-  }
-
-  .video-item:hover {
-    transform: scale(1.02);
-  }
-.video-item.local-video .video-element {
-  background: #000 !important;
-}
-
- .video-wrapper {
-  position: relative;
-  width: 100%;
-  aspect-ratio: 16 / 9;
-  background: #000;
-}
-  .video-element {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-  background: #000;
-}
-
-  .video-overlay {
-    position: absolute;
-    bottom: 0;
-    left: 0;
-    right: 0;
-    padding: 8px;
-    background: linear-gradient(to top, rgba(0,0,0,0.7), transparent);
-    color: var(--text-color);
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-  }
-
-  .video-name {
-    font-size: 12px;
-    font-weight: 500;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-
-  .video-status {
-    font-size: 10px;
-    display: flex;
-    align-items: center;
-    gap: 4px;
-  }
-
-  .video-status span {
-    color: #a0a0c0;
-  }
-
-  .proctor-controls {
-    display: flex;
-    gap: 4px;
-    margin-left: auto;
-  }
-
-  .proctor-controls button {
-    padding: 4px;
-    background: rgba(255,255,255,0.1);
-    border: none;
-    border-radius: 3px;
-    color: var(--text-color);
-    cursor: pointer;
-    font-size: 10px;
-    transition: background-color 0.2s;
-  }
-
-  .proctor-controls button:hover {
-    background: rgba(255,255,255,0.2);
-  }
-
-  /* Chat panel - smaller width */
-  .side-panel {
-    width: 250px;
-    background: var(--secondary-bg);
-    border-left: 1px solid var(--border);
-    display: flex;
-    flex-direction: column;
-    transform: translateX(100%);
-    transition: transform 0.3s ease-in-out;
-  }
-
-  .side-panel.open {
-    transform: translateX(0);
-  }
-
-  .chat-container {
-    flex: 1;
-    display: flex;
-    flex-direction: column;
-    padding: 12px;
-  }
-
-  .chat-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    margin-bottom: 12px;
-    padding-bottom: 8px;
-    border-bottom: 1px solid var(--border);
-  }
-
-  .chat-header h3 {
-    font-size: 14px;
-    font-weight: 600;
-    margin: 0;
-  }
-
-  .chat-header button {
-    background: none;
-    border: none;
-    font-size: 12px;
-    cursor: pointer;
-    color: var(--text-color);
-    opacity: 0.7;
-  }
-
-  .chat-header button:hover { opacity: 1; }
-
-  .chat-messages {
-    flex: 1;
-    overflow-y: auto;
-    padding: 8px;
-    background: #1c1c38;
-    border-radius: 6px;
-    margin-bottom: 12px;
-  }
-
-  .chat-message {
-    margin-bottom: 8px;
-    padding: 8px;
-    border-radius: 6px;
-    background: #24244a;
-    max-width: 90%;
-    font-size: 12px;
-  }
-
-  .chat-message.own-message {
-    background: var(--accent-blue);
-    margin-left: auto;
-  }
-
-  .chat-meta {
-    display: flex;
-    gap: 4px;
-    align-items: baseline;
-    margin-bottom: 2px;
-  }
-
-  .chat-sender {
-    font-weight: 500;
-    color: var(--accent-purple);
-    font-size: 11px;
-  }
-
-  .chat-time {
-    color: #a0a0c0;
-    font-size: 10px;
-  }
-
-  .chat-text {
-    font-size: 12px;
-  }
-
-  .chat-input {
-    display: flex;
-    gap: 6px;
-  }
-
-  .chat-input input {
-    flex: 1;
-    padding: 8px;
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    font-size: 12px;
-    background: #24244a;
-    color: var(--text-color);
-  }
-
-  .chat-input input:focus {
-    border-color: var(--accent-blue);
-    outline: none;
-  }
-
-  .chat-input button {
-    padding: 8px 10px;
-    background: var(--accent-blue);
-    color: var(--text-color);
-    border: none;
-    border-radius: 6px;
-    cursor: pointer;
-    font-size: 12px;
-  }
-
-  .chat-input button:hover {
-    background: var(--accent-purple);
-  }
-
-  /* Rest of your existing styles... */
   .join-room {
     display: flex;
     flex-direction: column;
@@ -2471,7 +2053,9 @@ useEffect(() => {
     transition: opacity 0.2s;
   }
 
-  .join-buttons button:hover { opacity: 0.9; }
+  .join-buttons button:hover {
+    opacity: 0.9;
+  }
 
   .conference-room {
     display: flex;
@@ -2520,7 +2104,9 @@ useEffect(() => {
     transition: background-color 0.2s;
   }
 
-  .top-controls button:hover { background: #2e2e4b; }
+  .top-controls button:hover {
+    background: #2e2e4b;
+  }
 
   .main-content {
     flex: 1;
@@ -2530,8 +2116,259 @@ useEffect(() => {
 
   .video-container {
     flex: 1;
+    padding: 12px;
     background: #000;
     overflow: auto;
+  }
+
+  .video-gallery {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 12px;
+    max-width: 1400px;
+    margin: 0 auto;
+  }
+
+  .video-item {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    background: #1c1c38;
+    border-radius: 10px;
+    overflow: hidden;
+    transition: transform 0.2s;
+  }
+
+  .local-video {
+    grid-column: span 2;
+    max-width: 500px;
+    margin: 0 auto;
+  }
+
+  .video-item:hover {
+    transform: scale(1.02);
+  }
+
+  .video-wrapper {
+    position: relative;
+    width: 100%;
+    aspect-ratio: 16 / 9;
+  }
+
+  /* Enhanced screen sharing styles - ONLY for screen shares */
+  .screen-share-wrapper {
+    grid-column: 1 / -1;
+    max-width: 100%;
+    margin: 0;
+    background: #000;
+    border: 2px solid var(--accent-blue);
+  }
+
+  .screen-share-wrapper .video-wrapper {
+    aspect-ratio: 16 / 9;
+    max-height: 70vh;
+  }
+
+  .screen-share-wrapper .video-element {
+    object-fit: contain;
+    background: #000;
+  }
+
+  .screen-share-wrapper .video-overlay {
+    background: linear-gradient(to top, rgba(0,0,0,0.8), transparent);
+  }
+
+  .screen-share-wrapper .video-name {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--accent-blue);
+  }
+
+  .video-element {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+  }
+
+  .video-overlay {
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    padding: 8px;
+    background: linear-gradient(to top, rgba(0,0,0,0.7), transparent);
+    color: var(--text-color);
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .video-name {
+    font-size: 13px;
+    font-weight: 500;
+  }
+
+  .video-status {
+    font-size: 11px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .video-status span {
+    color: #a0a0c0;
+  }
+
+  .proctor-controls {
+    display: flex;
+    gap: 4px;
+    margin-left: auto;
+  }
+
+  .proctor-controls button {
+    padding: 6px;
+    background: rgba(255,255,255,0.1);
+    border: none;
+    border-radius: 4px;
+    color: var(--text-color);
+    cursor: pointer;
+    font-size: 12px;
+    transition: background-color 0.2s;
+  }
+
+  .proctor-controls button:hover {
+    background: rgba(255,255,255,0.2);
+  }
+
+  .proctor-controls button.disabled {
+    background: var(--error);
+  }
+
+  .proctor-controls button.proctor-enabled {
+    background: var(--success);
+  }
+
+  .side-panel {
+    width: 300px;
+    background: var(--secondary-bg);
+    border-left: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    transform: translateX(100%);
+    transition: transform 0.3s ease-in-out;
+  }
+
+  .side-panel.open {
+    transform: translateX(0);
+  }
+
+  .chat-container {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    padding: 12px;
+  }
+
+  .chat-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 12px;
+  }
+
+  .chat-header h3 {
+    font-size: 16px;
+    font-weight: 600;
+    margin: 0;
+  }
+
+  .chat-header button {
+    background: none;
+    border: none;
+    font-size: 14px;
+    cursor: pointer;
+    color: var(--text-color);
+    opacity: 0.7;
+  }
+
+  .chat-header button:hover {
+    opacity: 1;
+  }
+
+  .chat-messages {
+    flex: 1;
+    overflow-y: auto;
+    padding: 8px;
+    background: #1c1c38;
+    border-radius: 6px;
+    margin-bottom: 12px;
+  }
+
+  .chat-message {
+    margin-bottom: 12px;
+    padding: 10px;
+    border-radius: 6px;
+    background: #24244a;
+    max-width: 80%;
+  }
+
+  .chat-message.own-message {
+    background: var(--accent-blue);
+    margin-left: auto;
+  }
+
+  .chat-meta {
+    display: flex;
+    gap: 6px;
+    align-items: baseline;
+    margin-bottom: 4px;
+  }
+
+  .chat-sender {
+    font-weight: 500;
+    color: var(--accent-purple);
+  }
+
+  .chat-time {
+    color: #a0a0c0;
+    font-size: 0.75em;
+  }
+
+  .chat-text {
+    font-size: 13px;
+  }
+
+  .chat-input {
+    display: flex;
+    gap: 8px;
+  }
+
+  .chat-input input {
+    flex: 1;
+    padding: 10px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    font-size: 13px;
+    background: #24244a;
+    color: var(--text-color);
+  }
+
+  .chat-input input:focus {
+    border-color: var(--accent-blue);
+    outline: none;
+  }
+
+  .chat-input button {
+    padding: 10px;
+    background: var(--accent-blue);
+    color: var(--text-color);
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+  }
+
+  .chat-input button:hover {
+    background: var(--accent-purple);
   }
 
   .bottom-bar {
@@ -2558,9 +2395,19 @@ useEffect(() => {
     transition: background-color 0.2s;
   }
 
-  .controls button:hover { background: #2e2e4b; }
-  .controls button.disabled { color: var(--error); border-color: var(--error); }
-  .controls button.sharing { color: var(--success); border-color: var(--success); }
+  .controls button:hover {
+    background: #2e2e4b;
+  }
+
+  .controls button.disabled {
+    color: var(--error);
+    border-color: var(--error);
+  }
+
+  .controls button.sharing {
+    color: var(--success);
+    border-color: var(--success);
+  }
 
   .debug-panel {
     position: absolute;
@@ -2594,52 +2441,6 @@ useEffect(() => {
     color: #a0a0c0;
   }
 
- .slides-indicator {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 12px;
-  padding: 8px;
-  background: rgba(0, 0, 0, 0.7);
-  border-radius: 20px;
-  margin: 10px auto;
-  max-width: 150px;
-  order: 999; /* Ensure it appears at the bottom */
-}
-
-.slide-counter {
-  font-size: 14px;
-  font-weight: 600;
-  color: var(--accent-blue);
-  min-width: 60px;
-  text-align: center;
-}
-
-.slide-nav-btn {
-  background: var(--accent-blue);
-  border: none;
-  border-radius: 50%;
-  width: 28px;
-  height: 28px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-  color: white;
-  font-size: 12px;
-  transition: background-color 0.2s;
-}
-
-.slide-nav-btn:hover {
-  background: var(--accent-purple);
-}
-
-.slide-nav-btn:disabled {
-  background: var(--border);
-  cursor: not-allowed;
-  opacity: 0.5;
-}
-
   @media (max-width: 1024px) {
     .main-content {
       flex-direction: column;
@@ -2657,16 +2458,14 @@ useEffect(() => {
     .video-container {
       height: 60%;
     }
-    .video-layout-container {
-      flex-direction: column;
-      gap: 15px;
+    .video-gallery {
+      grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
     }
-    .screen-share-section {
-      max-width: 100%;
+    .local-video {
+      grid-column: span 1;
     }
-    .camera-videos-section {
-      max-width: 100%;
-      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    .screen-share-wrapper .video-wrapper {
+      max-height: 50vh;
     }
   }
 
@@ -2692,16 +2491,13 @@ useEffect(() => {
       padding: 16px;
       max-width: 90%;
     }
-    .camera-videos-section {
-      grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-      gap: 10px;
+    .video-gallery {
+      grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
     }
-    .video-layout-container {
-      padding: 10px;
-      gap: 10px;
+    .screen-share-wrapper .video-wrapper {
+      max-height: 40vh;
     }
-  }
-}`}
+  }`}
         </style>
       </div>
     </ErrorBoundary>
