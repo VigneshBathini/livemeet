@@ -11,7 +11,7 @@ import JoinRoom from './JoinRoom';
 
 import axios from 'axios';
 
-const SIGNALING_SERVER_URL = 'http://localhost:3000';
+const SIGNALING_SERVER_URL = 'https://livemeet-ribm.onrender.com';
 
 class ErrorBoundary extends React.Component {
   state = { hasError: false };

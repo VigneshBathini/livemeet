@@ -18,7 +18,7 @@ const SignupPage = () => {
     setError('');
     console.log('Attempting signup with:', { email, password, name });
     try {
-      const response = await axios.post('http://localhost:3000/api/signup', { email, password, name });
+      const response = await axios.post('https://livemeet-ribm.onrender.com/api/signup', { email, password, name });
       console.log('Signup response:', response.data);
       login(response.data.user, response.data.token);
       navigate('/video');

@@ -66,7 +66,7 @@ const SchedulePage = ({ onScheduleComplete = () => {}, onBack = () => {} }) => {
     console.log('Payload:', payload);
 
     try {
-      const response = await axios.post('http://localhost:3000/api/schedule', payload, {
+      const response = await axios.post('https://livemeet-ribm.onrender.com/api/schedule', payload, {
         headers: { Authorization: `Bearer ${token}` },
       });
       console.log('Response:', response.data);

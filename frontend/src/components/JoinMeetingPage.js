@@ -30,7 +30,7 @@ const JoinMeetingPage = ({
 
     try {
       const { data } = await axios.post(
-        'http://localhost:3000/api/validate-invitee',
+        'https://livemeet-ribm.onrender.com/api/validate-invitee',
         { meetingId, email }
       );
 
