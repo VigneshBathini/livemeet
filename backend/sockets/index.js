@@ -1,3 +1,5 @@
+//working on user-left alerti with names
+
 
 const { pool } = require('../config/database');
 
@@ -10,6 +12,7 @@ const setupSocketHandlers = (io) => {
 
     socket.on('join-room', async (roomId, userId, userName, userEmail, isHost) => {
   socket.join(roomId);
+    socket.roomId = roomId;
 
 
   socket.userData = { userId, userName, userEmail, isHost };
@@ -207,7 +210,19 @@ const setupSocketHandlers = (io) => {
     // Handle user disconnect
     socket.on('disconnect', async () => {
       try {
-        socket.broadcast.emit('user-left', socket.id);
+    //     if (socket.roomId) {
+    //   socket.to(socket.roomId).emit("user-left", socket.id);
+    // }
+
+    if (socket.roomId) {
+  socket.to(socket.roomId).emit('user-left', {
+    userId: socket.id,
+    userName: socket.userData?.userName,
+    
+  });
+}
+
+    
         for (const roomId in roomHosts) {
           if (roomHosts[roomId] === socket.id) {
             delete roomHosts[roomId];

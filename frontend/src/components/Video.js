@@ -1,3 +1,4 @@
+//user left alert with names but when user joined 
 
 import React, { useState, useRef, useEffect, useCallback, useContext } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
@@ -362,21 +363,21 @@ const Video = ({ isExternal = false, meetingId, userEmail, userName: propUserNam
 
 
   // Add this useEffect to handle local video stream assignment
-useEffect(() => {
-  if (isAnyScreenSharing && localStreamRef.current && userVideoRef.current.camera) {
-    // Small delay to ensure DOM is updated
-    setTimeout(() => {
-      const videoElement = userVideoRef.current.camera;
-      if (videoElement && !videoElement.srcObject && localStreamRef.current) {
-        videoElement.srcObject = localStreamRef.current;
-        videoElement.play().catch((err) => {
-          logDebug(`Error playing local stream after page change: ${err.message}`);
-        });
-        logDebug(`Reassigned local stream after page change to page ${currentVideoPage}`);
-      }
-    }, 50);
-  }
-}, [currentVideoPage, isAnyScreenSharing, logDebug]);
+  useEffect(() => {
+    if (isAnyScreenSharing && localStreamRef.current && userVideoRef.current.camera) {
+      // Small delay to ensure DOM is updated
+      setTimeout(() => {
+        const videoElement = userVideoRef.current.camera;
+        if (videoElement && !videoElement.srcObject && localStreamRef.current) {
+          videoElement.srcObject = localStreamRef.current;
+          videoElement.play().catch((err) => {
+            logDebug(`Error playing local stream after page change: ${err.message}`);
+          });
+          logDebug(`Reassigned local stream after page change to page ${currentVideoPage}`);
+        }
+      }, 50);
+    }
+  }, [currentVideoPage, isAnyScreenSharing, logDebug]);
 
 
 
@@ -636,7 +637,7 @@ useEffect(() => {
     socketRef.current.on('offer', handleOffer);
     socketRef.current.on('answer', handleAnswer);
     socketRef.current.on('ice-candidate', handleIceCandidate);
-    socketRef.current.on('user-left', handleUserLeft);
+    socketRef.current.on('user-left', ({ userId, userName }) => handleUserLeft(userId, userName));
     socketRef.current.on('chat-message', handleChatMessage);
     socketRef.current.on('toggle-media', handleToggleMedia);
     socketRef.current.on('face-detection-alert', (data) => {
@@ -714,8 +715,10 @@ useEffect(() => {
     testIceServers();
 
     return () => {
-      socketRef.current.disconnect();
-      socketRef.current = null;
+      if (socketRef.current) {
+        socketRef.current.disconnect();
+        socketRef.current = null;
+      }
     };
   }, [roomId, inRoom, userName, email, isHost, logDebug, addAlert]);
 
@@ -1336,33 +1339,33 @@ useEffect(() => {
       }, 100);
     });
 
-   peer.on('stream', (stream) => {
-  logDebug(`Received stream from ${userId}, tracks: ${stream.getTracks().map((t) => `${t.kind}:${t.label || t.id} (type: ${t._type || 'unknown'})`).join(', ')}`);
-  
-  if (!peersRef.current[userId]) {
-    peersRef.current[userId] = { remoteStreams: {} };
-  }
-  
-  // Store the stream for later use
-  if (!peersRef.current[userId]._remoteStreams) {
-    peersRef.current[userId]._remoteStreams = {};
-  }
+    peer.on('stream', (stream) => {
+      logDebug(`Received stream from ${userId}, tracks: ${stream.getTracks().map((t) => `${t.kind}:${t.label || t.id} (type: ${t._type || 'unknown'})`).join(', ')}`);
 
-  pendingRemoteStreams.current[userId] = pendingRemoteStreams.current[userId] || {
-    camera: null,
-    screen: null,
-    audio: null,
-  };
-  if (!videoStreamCount.current[userId]) videoStreamCount.current[userId] = 0;
+      if (!peersRef.current[userId]) {
+        peersRef.current[userId] = { remoteStreams: {} };
+      }
 
-  stream.getTracks().forEach((track) => {
-    logDebug(`Processing track ${track.id}: ${track.kind} (enabled: ${track.enabled}, type: ${track._type || 'unknown'})`);
-    if (track.kind === 'audio') {
-      if (track.enabled) {
-        const audioStream = new MediaStream([track]);
-        pendingRemoteStreams.current[userId].audio = audioStream;
-        peersRef.current[userId]._remoteStreams.audio = audioStream;
-        logDebug(`Stored audio stream for ${userId} (track: ${track.id})`);
+      // Store the stream for later use
+      if (!peersRef.current[userId]._remoteStreams) {
+        peersRef.current[userId]._remoteStreams = {};
+      }
+
+      pendingRemoteStreams.current[userId] = pendingRemoteStreams.current[userId] || {
+        camera: null,
+        screen: null,
+        audio: null,
+      };
+      if (!videoStreamCount.current[userId]) videoStreamCount.current[userId] = 0;
+
+      stream.getTracks().forEach((track) => {
+        logDebug(`Processing track ${track.id}: ${track.kind} (enabled: ${track.enabled}, type: ${track._type || 'unknown'})`);
+        if (track.kind === 'audio') {
+          if (track.enabled) {
+            const audioStream = new MediaStream([track]);
+            pendingRemoteStreams.current[userId].audio = audioStream;
+            peersRef.current[userId]._remoteStreams.audio = audioStream;
+            logDebug(`Stored audio stream for ${userId} (track: ${track.id})`);
             setTimeout(() => {
               const videoElements = [];
               if (peerVideoRefs.current[userId]?.camera) {
@@ -1382,25 +1385,25 @@ useEffect(() => {
             }, 200);
           }
         } else if (track.kind === 'video') {
-      videoStreamCount.current[userId]++;
-      const settings = track.getSettings ? track.getSettings() : {};
-      let isScreen =
-        track._type === 'screen' ||
-        settings.displaySurface ||
-        track.label?.toLowerCase().includes('screen') ||
-        track.id.includes('screen') ||
-        (settings.width >= 1280 && settings.height >= 720 && !settings.facingMode);
-      if (!isScreen && videoStreamCount.current[userId] > 1) {
-        isScreen = true;
-      }
-      const streamType = isScreen ? 'screen' : 'camera';
-      logDebug(`Classified track ${track.id} as '${streamType}'`);
-      const singleTrackStream = new MediaStream([track]);
-      pendingRemoteStreams.current[userId][streamType] = singleTrackStream;
-      peersRef.current[userId]._remoteStreams[streamType] = singleTrackStream;
-      assignPeerStream(userId, streamType, singleTrackStream);
-    }
-  });
+          videoStreamCount.current[userId]++;
+          const settings = track.getSettings ? track.getSettings() : {};
+          let isScreen =
+            track._type === 'screen' ||
+            settings.displaySurface ||
+            track.label?.toLowerCase().includes('screen') ||
+            track.id.includes('screen') ||
+            (settings.width >= 1280 && settings.height >= 720 && !settings.facingMode);
+          if (!isScreen && videoStreamCount.current[userId] > 1) {
+            isScreen = true;
+          }
+          const streamType = isScreen ? 'screen' : 'camera';
+          logDebug(`Classified track ${track.id} as '${streamType}'`);
+          const singleTrackStream = new MediaStream([track]);
+          pendingRemoteStreams.current[userId][streamType] = singleTrackStream;
+          peersRef.current[userId]._remoteStreams[streamType] = singleTrackStream;
+          assignPeerStream(userId, streamType, singleTrackStream);
+        }
+      });
 
       setTimeout(() => {
         if (pendingRemoteStreams.current[userId]) {
@@ -1562,8 +1565,20 @@ useEffect(() => {
     }
   };
 
-  const handleUserLeft = (userId) => {
-    logDebug(`User left: ${userId}`);
+  const handleUserLeft = (userId,serverName) => {
+    console.log('server name',serverName)
+    const displayName = serverName ||connectionStatus[userId]?.userName ||
+    participantControls[userId]?.userName ||
+    shortId(userId);
+    console.log('user left name',displayName)
+    console.log("== DEBUG USER LEFT ==");
+console.log("connectionStatus:", connectionStatus[userId]);
+console.log("participantControls:", participantControls[userId]);
+console.log("shortId:", shortId(userId));
+console.log("Final Name:", displayName);
+console.log("================================");
+
+    // logDebug(`User left: ${displayName}`);
     const userName = connectionStatus[userId]?.userName || shortId(userId);
     setConnectionStatus((prev) => {
       const newStatus = { ...prev };
@@ -1599,7 +1614,7 @@ useEffect(() => {
         delete peerVideoRefs.current[userId];
       }
     }
-    addAlert(`${userName} left the meeting.`, 'info');
+    addAlert(`${displayName} left the meeting.`, 'info');
   };
 
   const handleChatMessage = (data) => {
@@ -1698,22 +1713,82 @@ useEffect(() => {
   };
 
   const leaveRoom = () => {
+    // Stop all tracks
     if (localStreamRef.current) {
-      localStreamRef.current.getTracks().forEach((track) => track.stop());
+      localStreamRef.current.getTracks().forEach(track => track.stop());
+      localStreamRef.current = null;
     }
+    setLocalStream(null);
+
     if (screenStream) {
-      screenStream.getTracks().forEach((track) => track.stop());
+      screenStream.getTracks().forEach(track => track.stop());
+      setScreenStream(null);
     }
-    Object.values(peersRef.current).forEach((peer) => peer.destroy());
-    socketRef.current.disconnect();
+
+    // Destroy all peers
+    Object.values(peersRef.current).forEach(peer => {
+      if (peer && typeof peer.destroy === 'function') {
+        peer.destroy();
+      }
+    });
+    peersRef.current = {};
+    setPeers({});
+
+    // Clear pending streams & refs
+    pendingRemoteStreams.current = {};
+    pendingCandidates.current = {};
+    renegotiationQueue.current = {};
+    videoStreamCount.current = {};
+    detectionIntervals.current = {};
+    pendingPeerCreations.current = {};
+    hasJoinedRef.current = false;
+    isJoiningRef.current = false;
+    screenShareActiveRef.current = false;
+    screenShareTrackRef.current = null;
+
+    // Properly disconnect socket
+    if (socketRef.current) {
+      socketRef.current.off(); // Remove all listeners
+      socketRef.current.disconnect();
+      socketRef.current = null;
+    }
+
+    // Reset video refs
+    if (userVideoRef.current.camera) userVideoRef.current.camera.srcObject = null;
+    if (userVideoRef.current.screen) userVideoRef.current.screen.srcObject = null;
+    Object.keys(peerVideoRefs.current).forEach(userId => {
+      if (peerVideoRefs.current[userId]) {
+        if (peerVideoRefs.current[userId].camera) {
+          peerVideoRefs.current[userId].camera.srcObject = null;
+        }
+        if (peerVideoRefs.current[userId].screen) {
+          peerVideoRefs.current[userId].screen.srcObject = null;
+        }
+      }
+    });
+    peerVideoRefs.current = {};
+
+    // Reset all state
     setInRoom(false);
     setIsHost(false);
-    setPeers({});
-    setMessages([]);
     setConnectionStatus({});
     setParticipantControls({});
-    localStreamRef.current = null;
-    navigate('/video');
+    setMessages([]);
+    setAlerts([]);
+    setIsVideoOn(true);
+    setIsAudioOn(true);
+    setIsScreenSharing(false);
+    setCurrentVideoPage(1);
+    setTotalVideoPages(1);
+
+    // Optional: Force re-render by resetting roomId temporarily
+    // This clears the input field and forces fresh join
+    setRoomId('');
+
+    addAlert('You have left the meeting.', 'info');
+
+    // Critical: Navigate to clean state or force remount
+    navigate('/video'); // This should trigger fresh JoinRoom
   };
 
   return (
@@ -1740,12 +1815,13 @@ useEffect(() => {
             joinRoom={joinRoom}
             createRoom={createRoom}
             isExternal={isExternal}
+            addAlert={addAlert}
           />
         ) : (
           <div className="conference-room">
             <header className="top-bar">
               <div className="meeting-info">
-                <h2>Meeting: {roomId} {isHost ? '(Host)' : ''}</h2>
+                <h2>Meeting ID: {roomId} {isHost ? '(Host)' : ''}</h2>
                 <span>{Object.keys(peers).length + 1} participant(s)</span>
               </div>
               <div className="top-controls">
@@ -1831,181 +1907,184 @@ useEffect(() => {
                       </div>
                     )}
 
-                    
-{/* Camera Videos Section - Right Side */}
-<div className="camera-videos-section">
-  {/* Render ALL videos from getCurrentPageCameraVideos */}
-  {getCurrentPageCameraVideos().map((videoId) => {
-    if (videoId === 'local') {
-      // Local user camera - FIXED: Ensure local video is always properly assigned
-      return (
-        <div className="video-item local-video" key="local">
-          <div className="video-wrapper">
-            <video
-              ref={(el) => {
-                if (el && userVideoRef.current.camera !== el) {
-                  userVideoRef.current.camera = el;
-                  logDebug(`Local video element READY on page ${currentVideoPage}`);
-                  
-                  // Always ensure local stream is assigned
-                  if (localStreamRef.current && !el.srcObject) {
-                    el.srcObject = localStreamRef.current;
-                    el.play().catch((err) => {
-                      logDebug(`Error playing local stream on page ${currentVideoPage}: ${err.message}`);
-                    });
-                    logDebug(`Assigned local stream to video element on page ${currentVideoPage}`);
-                  }
-                }
-              }}
-              autoPlay
-              muted
-              playsInline
-              className="video-element"
-            />
-            <div className="video-overlay">
-              <span className="video-name">You ({userName})</span>
-              <div className="video-status">
-                {isVideoOn ? <i className="fas fa-video"></i> : <i className="fas fa-video-slash"></i>}
-                {isAudioOn ? <i className="fas fa-microphone"></i> : <i className="fas fa-microphone-slash"></i>}
-              </div>
-            </div>
-          </div>
-        </div>
-      );
-    } else {
-      // Remote participant camera
-      const userId = videoId;
-      const status = connectionStatus[userId];
-      const controls = participantControls[userId];
-      
-      // Ensure peer refs exist
-      if (!peerVideoRefs.current[userId]) {
-        peerVideoRefs.current[userId] = {};
-      }
 
-      return (
-        <div className="video-item" key={`${userId}-camera`}>
-          <div className="video-wrapper">
-            <video
-              ref={(el) => {
-                if (el && peerVideoRefs.current[userId].camera !== el) {
-                  peerVideoRefs.current[userId].camera = el;
-                  logDebug(`Video element READY for ${shortId(userId)} on page ${currentVideoPage}`);
-                  
-                  // Immediately assign stream if available
-                  if (pendingRemoteStreams.current[userId]?.camera) {
-                    el.srcObject = pendingRemoteStreams.current[userId].camera;
-                    el.play().catch(() => { });
-                    logDebug(`Assigned PENDING camera stream to ${shortId(userId)} on page ${currentVideoPage}`);
-                    pendingRemoteStreams.current[userId].camera = null;
-                  } else {
-                    // Check if peer has an active stream
-                    const peer = peersRef.current[userId];
-                    if (peer && peer._remoteStreams?.camera) {
-                      el.srcObject = peer._remoteStreams.camera;
-                      el.play().catch(() => { });
-                      logDebug(`Assigned existing camera stream to ${shortId(userId)} on page ${currentVideoPage}`);
-                    }
-                  }
-                }
-              }}
-              autoPlay
-              playsInline
-              muted={false}
-              className="video-element"
-              style={{ background: '#000' }}
-            />
-            <div className="video-overlay">
-              <span className="video-name">
-                {status?.userName || `Participant (${shortId(userId)})`}
-                {status?.streams?.screen && " 🔄"}
-              </span>
-              <div className="video-status">
-                <span>{status?.status || 'connecting'}</span>
-                {isHost && controls && (
-                  <div className="proctor-controls">
-                    <button onClick={() => toggleParticipantMedia(userId, 'video')}>
-                      <i className={controls.video ? 'fas fa-video' : 'fas fa-video-slash'}></i>
-                    </button>
-                    <button onClick={() => toggleParticipantMedia(userId, 'audio')}>
-                      <i className={controls.audio ? 'fas fa-microphone' : 'fas fa-microphone-slash'}></i>
-                    </button>
-                    <button onClick={() => toggleParticipantMedia(userId, 'proctor')}>
-                      <i className={controls.proctor ? 'fas fa-user-check' : 'fas fa-user'}></i>
-                    </button>
-                  </div>
-                )}
-              </div>
-            </div>
-          </div>
-        </div>
-      );
-    }
-  })}
-  
-  {/* Slides indicator */}
-  {isAnyScreenSharing && totalVideoPages > 1 && (
-    <div className="slides-indicator">
-      <button 
-        onClick={() => navigateVideoPage('prev')}
-        className="slide-nav-btn"
-        title="Previous page"
-      >
-        <i className="fas fa-chevron-left"></i>
-      </button>
-      
-      <span className="slide-counter">
-        &lt; {currentVideoPage} / {totalVideoPages} &gt;
-      </span>
-      
-      <button 
-        onClick={() => navigateVideoPage('next')}
-        className="slide-nav-btn"
-        title="Next page"
-      >
-        <i className="fas fa-chevron-right"></i>
-      </button>
-    </div>
-  )}
-</div>
+                    {/* Camera Videos Section - Right Side */}
+                    <div className="camera-videos-section">
+                      {/* Render ALL videos from getCurrentPageCameraVideos */}
+                      {getCurrentPageCameraVideos().map((videoId) => {
+                        if (videoId === 'local') {
+                          // Local user camera - FIXED: Ensure local video is always properly assigned
+                          return (
+                            <div className="video-item local-video" key="local">
+                              <div className="video-wrapper">
+                                <video
+                                  ref={(el) => {
+                                    if (el && userVideoRef.current.camera !== el) {
+                                      userVideoRef.current.camera = el;
+                                      logDebug(`Local video element READY on page ${currentVideoPage}`);
+
+                                      // Always ensure local stream is assigned
+                                      if (localStreamRef.current && !el.srcObject) {
+                                        el.srcObject = localStreamRef.current;
+                                        el.play().catch((err) => {
+                                          logDebug(`Error playing local stream on page ${currentVideoPage}: ${err.message}`);
+                                        });
+                                        logDebug(`Assigned local stream to video element on page ${currentVideoPage}`);
+                                      }
+                                    }
+                                  }}
+                                  autoPlay
+                                  muted
+                                  playsInline
+                                  className="video-element"
+                                />
+                                <div className="video-overlay">
+                                  <span className="video-name">You ({userName})</span>
+                                  <div className="video-status">
+                                    {isVideoOn ? <i className="fas fa-video"></i> : <i className="fas fa-video-slash"></i>}
+                                    {isAudioOn ? <i className="fas fa-microphone"></i> : <i className="fas fa-microphone-slash"></i>}
+                                  </div>
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        } else {
+                          // Remote participant camera
+                          const userId = videoId;
+                          const status = connectionStatus[userId];
+                          const controls = participantControls[userId];
+
+                          // Ensure peer refs exist
+                          if (!peerVideoRefs.current[userId]) {
+                            peerVideoRefs.current[userId] = {};
+                          }
+
+                          return (
+                            <div className="video-item" key={`${userId}-camera`}>
+                              <div className="video-wrapper">
+                                <video
+                                  ref={(el) => {
+                                    if (el && peerVideoRefs.current[userId].camera !== el) {
+                                      peerVideoRefs.current[userId].camera = el;
+                                      logDebug(`Video element READY for ${shortId(userId)} on page ${currentVideoPage}`);
+
+                                      // Immediately assign stream if available
+                                      if (pendingRemoteStreams.current[userId]?.camera) {
+                                        el.srcObject = pendingRemoteStreams.current[userId].camera;
+                                        el.play().catch(() => { });
+                                        logDebug(`Assigned PENDING camera stream to ${shortId(userId)} on page ${currentVideoPage}`);
+                                        pendingRemoteStreams.current[userId].camera = null;
+                                      } else {
+                                        // Check if peer has an active stream
+                                        const peer = peersRef.current[userId];
+                                        if (peer && peer._remoteStreams?.camera) {
+                                          el.srcObject = peer._remoteStreams.camera;
+                                          el.play().catch(() => { });
+                                          logDebug(`Assigned existing camera stream to ${shortId(userId)} on page ${currentVideoPage}`);
+                                        }
+                                      }
+                                    }
+                                  }}
+                                  autoPlay
+                                  playsInline
+                                  muted={false}
+                                  className="video-element"
+                                  style={{ background: '#000' }}
+                                />
+                                <div className="video-overlay">
+                                  <span className="video-name">
+                                    {status?.userName || `Participant (${shortId(userId)})`}
+                                    {status?.streams?.screen && " 🔄"}
+                                  </span>
+                                  <div className="video-status">
+                                    <span>{status?.status || 'connecting'}</span>
+                                    {isHost && controls && (
+                                      <div className="proctor-controls">
+                                        <button onClick={() => toggleParticipantMedia(userId, 'video')}>
+                                          <i className={controls.video ? 'fas fa-video' : 'fas fa-video-slash'}></i>
+                                        </button>
+                                        <button onClick={() => toggleParticipantMedia(userId, 'audio')}>
+                                          <i className={controls.audio ? 'fas fa-microphone' : 'fas fa-microphone-slash'}></i>
+                                        </button>
+                                        <button onClick={() => toggleParticipantMedia(userId, 'proctor')}>
+                                          <i className={controls.proctor ? 'fas fa-user-check' : 'fas fa-user'}></i>
+                                        </button>
+                                      </div>
+                                    )}
+                                  </div>
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        }
+                      })}
+
+                      {/* Slides indicator */}
+                      {isAnyScreenSharing && totalVideoPages > 1 && (
+                        <div className="slides-indicator">
+                          <button
+                            onClick={() => navigateVideoPage('prev')}
+                            className="slide-nav-btn"
+                            title="Previous page"
+                          >
+                            <i className="fas fa-chevron-left"></i>
+                          </button>
+
+                          <span className="slide-counter">
+                            &lt; {currentVideoPage} / {totalVideoPages} &gt;
+                          </span>
+
+                          <button
+                            onClick={() => navigateVideoPage('next')}
+                            className="slide-nav-btn"
+                            title="Next page"
+                          >
+                            <i className="fas fa-chevron-right"></i>
+                          </button>
+                        </div>
+                      )}
+                    </div>
                   </div>
                 </div>
               </div>
 
               {/* Chat Panel */}
-              <div className={`side-panel ${showChat ? 'open' : ''}`}>
-                <div className="chat-container">
-                  <div className="chat-header">
-                    <h3>Chat</h3>
-                    <button onClick={() => setShowChat(false)} title="Close chat">
-                      <i className="fas fa-times"></i>
-                    </button>
-                  </div>
-                  <div className="chat-messages" ref={chatRef}>
-                    {messages.map((msg, index) => (
-                      <div key={index} className={`chat-message ${msg.from === socketRef.current.id ? 'own-message' : ''}`}>
-                        <div className="chat-meta">
-                          <span className="chat-sender">{msg.from === socketRef.current.id ? 'You' : msg.userName}</span>
-                          <span className="chat-time">{msg.time}</span>
-                        </div>
-                        <div className="chat-text">{msg.message}</div>
-                      </div>
-                    ))}
-                  </div>
-                  <div className="chat-input">
-                    <input
-                      type="text"
-                      value={chatInput}
-                      onChange={(e) => setChatInput(e.target.value)}
-                      placeholder="Type a message..."
-                      onKeyPress={(e) => e.key === 'Enter' && sendChatMessage()}
-                    />
-                    <button onClick={sendChatMessage} title="Send message">
-                      <i className="fas fa-paper-plane"></i>
-                    </button>
-                  </div>
-                </div>
-              </div>
+              {/* Chat Panel */}
+<div className={`side-panel ${showChat ? 'open' : ''}`}>
+  <div className="chat-container">
+    <div className="chat-header">
+      <h3>Chat</h3>
+      <button onClick={() => setShowChat(false)} title="Close chat">
+        <i className="fas fa-times"></i>
+      </button>
+    </div>
+    <div className="chat-messages-wrapper">
+      <div className="chat-messages" ref={chatRef}>
+        {messages.map((msg, index) => (
+          <div key={index} className={`chat-message ${msg.from === socketRef.current.id ? 'own-message' : ''}`}>
+            <div className="chat-meta">
+              <span className="chat-sender">{msg.from === socketRef.current.id ? 'You' : msg.userName}</span>
+              <span className="chat-time">{msg.time}</span>
+            </div>
+            <div className="chat-text">{msg.message}</div>
+          </div>
+        ))}
+      </div>
+    </div>
+    <div className="chat-input">
+      <input
+        type="text"
+        value={chatInput}
+        onChange={(e) => setChatInput(e.target.value)}
+        placeholder="Type a message..."
+        onKeyPress={(e) => e.key === 'Enter' && sendChatMessage()}
+      />
+      <button onClick={sendChatMessage} title="Send message">
+        <i className="fas fa-paper-plane"></i>
+      </button>
+    </div>
+  </div>
+</div>
             </div>
 
             <footer className="bottom-bar">
@@ -2295,17 +2374,28 @@ useEffect(() => {
     flex-direction: column;
     transform: translateX(100%);
     transition: transform 0.3s ease-in-out;
+    height: 100%; /* Add this */
   }
 
   .side-panel.open {
     transform: translateX(0);
   }
 
+  .chat-messages-wrapper {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0; /* Important for flexbox scrolling */
+  margin-bottom: 12px;
+  overflow: hidden; /* Contain the scrolling */
+}
   .chat-container {
     flex: 1;
     display: flex;
     flex-direction: column;
+      height: 100%; /* Add this */
     padding: 12px;
+      min-height: 0; 
   }
 
   .chat-header {
@@ -2315,6 +2405,7 @@ useEffect(() => {
     margin-bottom: 12px;
     padding-bottom: 8px;
     border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
   }
 
   .chat-header h3 {
@@ -2334,35 +2425,38 @@ useEffect(() => {
 
   .chat-header button:hover { opacity: 1; }
 
-  .chat-messages {
-    flex: 1;
-    overflow-y: auto;
-    padding: 8px;
-    background: #1c1c38;
-    border-radius: 6px;
-    margin-bottom: 12px;
-  }
+ .chat-messages {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px;
+  background: #1c1c38;
+  border-radius: 6px;
+  /* Hide scrollbar for Chrome, Safari and Opera */
+  scrollbar-width: none; /* Firefox */
+  -ms-overflow-style: none; /* IE and Edge */
+}
 
-  .chat-message {
-    margin-bottom: 8px;
-    padding: 8px;
-    border-radius: 6px;
-    background: #24244a;
-    max-width: 90%;
-    font-size: 12px;
-  }
-
+  
+ .chat-message {
+  margin-bottom: 8px;
+  padding: 8px;
+  border-radius: 6px;
+  background: #24244a;
+  max-width: 90%;
+  font-size: 12px;
+  word-wrap: break-word;
+}
   .chat-message.own-message {
-    background: var(--accent-blue);
-    margin-left: auto;
-  }
+  background: var(--accent-blue);
+  margin-left: auto;
+}
 
   .chat-meta {
-    display: flex;
-    gap: 4px;
-    align-items: baseline;
-    margin-bottom: 2px;
-  }
+  display: flex;
+  gap: 4px;
+  align-items: baseline;
+  margin-bottom: 2px;
+}
 
   .chat-sender {
     font-weight: 500;
@@ -2375,43 +2469,45 @@ useEffect(() => {
     font-size: 10px;
   }
 
-  .chat-text {
-    font-size: 12px;
-  }
+ .chat-text {
+  font-size: 12px;
+  word-wrap: break-word;
+  line-height: 1.3;
+}
 
-  .chat-input {
-    display: flex;
-    gap: 6px;
-  }
+.chat-input {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
 
-  .chat-input input {
-    flex: 1;
-    padding: 8px;
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    font-size: 12px;
-    background: #24244a;
-    color: var(--text-color);
-  }
-
+.chat-input input {
+  flex: 1;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 12px;
+  background: #24244a;
+  color: var(--text-color);
+}
   .chat-input input:focus {
     border-color: var(--accent-blue);
     outline: none;
   }
 
   .chat-input button {
-    padding: 8px 10px;
-    background: var(--accent-blue);
-    color: var(--text-color);
-    border: none;
-    border-radius: 6px;
-    cursor: pointer;
-    font-size: 12px;
-  }
+  padding: 8px 10px;
+  background: var(--accent-blue);
+  color: var(--text-color);
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 12px;
+}
 
-  .chat-input button:hover {
-    background: var(--accent-purple);
-  }
+.chat-input button:hover {
+  background: var(--accent-purple);
+}
 
   /* Rest of your existing styles... */
   .join-room {
