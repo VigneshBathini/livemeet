@@ -6,7 +6,8 @@ import DatePicker from 'react-datepicker';
 import 'react-datepicker/dist/react-datepicker.css';
 import { AuthContext } from './AuthContext';
 
-const API_URL = process.env.API_URL || "http://localhost:3000";
+// const API_URL = process.env.API_URL || "http://localhost:3000";
+const API_URL = "https://livemeet-ribm.onrender.com";
 
 const SchedulePage = ({ onScheduleComplete = () => {}, onBack = () => {} }) => {
   const { user, token } = useContext(AuthContext);

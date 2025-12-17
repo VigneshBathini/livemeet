@@ -3,7 +3,9 @@ import { useNavigate } from 'react-router-dom';
 import axios from 'axios';
 import { AuthContext } from './AuthContext';
 
-const API_URL = process.env.API_URL || "http://localhost:3000";
+// const API_URL = process.env.API_URL || "http://localhost:3000";
+
+const API_URL = "https://livemeet-ribm.onrender.com";
 
 const SignupPage = () => {
   const [email, setEmail] = useState('');

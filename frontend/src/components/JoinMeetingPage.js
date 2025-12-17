@@ -4,7 +4,9 @@ import { useParams, useNavigate } from 'react-router-dom';
 import axios from 'axios';
 import Video from './Video';
 
-const API_URL = process.env.API_URL || "http://localhost:3000";
+// const API_URL = process.env.API_URL || "http://localhost:3000";
+
+const API_URL = "https://livemeet-ribm.onrender.com";
 
 
 const JoinMeetingPage = ({
