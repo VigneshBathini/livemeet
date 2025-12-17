@@ -4,6 +4,9 @@ import { useParams, useNavigate } from 'react-router-dom';
 import axios from 'axios';
 import Video from './Video';
 
+const API_URL = process.env.API_URL || "http://localhost:3000";
+
+
 const JoinMeetingPage = ({
   addAlert = (msg, type) => console.log(`${type}: ${msg}`),
 }) => {
@@ -30,13 +33,14 @@ const JoinMeetingPage = ({
 
     try {
       const { data } = await axios.post(
-        'https://livemeet-ribm.onrender.com/api/validate-invitee',
+        `${API_URL}/api/validate-invitee`,
         { meetingId, email }
       );
 
       if (data.valid) {
         setValidated(true);
         setIsHost(!!data.isHost);
+        console.log('Validation successful:', validated + ' isHost: ' + isHost);
         addAlert(
           `Welcome ${name}! Starting as ${data.isHost ? 'HOST' : 'Participant'}...`,
           'success'
@@ -53,8 +57,9 @@ const JoinMeetingPage = ({
       setLoading(false);
     }
   };
-
+ console.log('rendering JoinMeetingPage, validated:', validated);
   if (validated) {
+    console.log('Rendering Video component with props:', {isHost,validated});
     return (
       <Video
         isExternal={true}
@@ -63,6 +68,7 @@ const JoinMeetingPage = ({
         userName={name}
         isHostM={isHost}
         addAlert={addAlert}
+        validated={true}
       />
     );
   }

@@ -3,6 +3,8 @@ import { useNavigate } from 'react-router-dom';
 import axios from 'axios';
 import { AuthContext } from './AuthContext';
 
+const API_URL = process.env.API_URL || "http://localhost:3000";
+
 const SignupPage = () => {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -12,13 +14,26 @@ const SignupPage = () => {
   const { login } = useContext(AuthContext);
   const navigate = useNavigate();
 
+  const isValidEmail = (email) => {
+  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  return emailRegex.test(email);
+};
+
+
   const handleSignup = async (e) => {
+
     e.preventDefault();
     setLoading(true);
     setError('');
+
+    if (!isValidEmail(email)) {
+    setError('Please enter a valid email address');
+     setLoading(false   );
+    return;
+  }
     console.log('Attempting signup with:', { email, password, name });
     try {
-      const response = await axios.post('https://livemeet-ribm.onrender.com/api/signup', { email, password, name });
+      const response = await axios.post(`${API_URL}/api/signup`, { email, password, name });
       console.log('Signup response:', response.data);
       login(response.data.user, response.data.token);
       navigate('/video');

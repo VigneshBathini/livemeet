@@ -10,6 +10,8 @@ const AuthProvider = ({ children }) => {
   });
   const [token, setToken] = useState(localStorage.getItem('token') || '');
 
+  
+
   const login = (userData, token) => {
     setUser(userData);
     setToken(token);

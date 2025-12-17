@@ -3,6 +3,9 @@ const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const { v4: uuidV4 } = require('uuid');
 const { pool } = require('../config/database');
+const { sendEmail } = require('../utils/email');
+const { v4 } = require('uuid');
+
 
 const router = express.Router();
 
@@ -10,6 +13,50 @@ const JWT_SECRET = process.env.JWT_SECRET || 'your_jwt_secret_key_here';
 
 router.get('/test', (req, res) => {
   res.status(200).send('Server is running');
+});
+
+
+router.post('/instant', async (req, res) => {
+  const { meetingTitle, creatorId } = req.body;
+
+  try {
+    //  Fetch name & email from users table (trusted)
+    const [user] = await pool.execute(
+      "SELECT name, email FROM users WHERE id = ?",
+      [creatorId]
+    );
+
+    if (user.length === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    const creatorName = user[0].name;
+    const creatorEmail = user[0].email;
+
+    const roomId = v4();
+
+    console.log('Creating instant meeting:', { roomId, meetingTitle, creatorId, creatorName, creatorEmail });
+
+    const [result] = await pool.execute(
+      `INSERT INTO instant_meeting 
+       (room_id, meeting_title, creator_id, creator_email, creator_name)
+       VALUES (?, ?, ?, ?, ?)`,
+      [roomId, meetingTitle, creatorId, creatorEmail, creatorName]
+    );
+
+    res.json({
+      message: 'Instant meeting created',
+      roomId,
+      meetingId: result.insertId,
+      meetingTitle: meetingTitle || 'Instant Meeting',
+      creatorName,
+      creatorEmail
+    });
+
+  } catch (err) {
+    console.error('Error creating instant meeting:', err);
+    res.status(500).json({ error: 'Failed to create instant meeting' });
+  }
 });
 
 
@@ -128,6 +175,107 @@ router.post('/claim-host', async (req, res) => {
   }
 });
 
+router.get('/meetings/:userId', async (req, res) => {
+  const { userId } = req.params;
+
+  try {
+    // Fetch user details
+    const [users] = await pool.execute("SELECT email FROM users WHERE id = ?", [userId]);
+    if (users.length === 0) {
+      return res.status(404).json({ error: "User not found" });
+    }
+
+    const userEmail = users[0].email;
+
+    // Fetch meetings created by user
+    const [createdMeetings] = await pool.execute(
+      `SELECT * FROM meetings WHERE creator_id = ?`, 
+      [userId]
+    );
+
+    // Fetch meetings where user is an invitee
+    const [invitedMeetings] = await pool.execute(
+      `SELECT * FROM meetings WHERE invitees_json LIKE ?`, 
+      [`%${userEmail}%`]
+    );
+
+    // Merge and format results
+    const allMeetings = [...createdMeetings, ...invitedMeetings].map(m => ({
+      id: m.id,
+      roomId: m.room_id,
+      title: m.meeting_title,
+      host: m.creator_name,
+      startTime: m.scheduled_datetime,
+      endTime: new Date(new Date(m.scheduled_datetime).getTime() + 30 * 60000), // +30 min
+      description: m.description
+    }));
+
+    res.json(allMeetings);
+  } catch (err) {
+    console.error("Error fetching meetings:", err);
+    res.status(500).json({ error: "Failed to load meetings" });
+  }
+});
+
+// New route — only for instant meetings
+router.post('/validate-instant', async (req, res) => {
+  const { roomId, email } = req.body;
+
+  if (!roomId || !email) {
+    return res.status(400).json({ error: 'Room ID and email are required' });
+  }
+
+  try {
+    const [instantMeetings] = await pool.execute(
+      'SELECT creator_email FROM instant_meeting WHERE room_id = ?',
+      [roomId]
+    );
+
+    if (instantMeetings.length === 0) {
+      return res.status(404).json({ error: 'Instant meeting not found' });
+    }
+
+    const creatorEmail = instantMeetings[0].creator_email;
+    const isHost = creatorEmail === email;
+
+    // Instant meetings are open to anyone with the link
+    return res.json({ valid: true, isHost });
+
+  } catch (err) {
+    console.error('Error validating instant meeting:', err);
+    res.status(500).json({ error: 'Failed to validate instant meeting' });
+  }
+});
+
+// New route — claim host for instant meetings only
+router.post('/claim-host-instant', async (req, res) => {
+  const { roomId, email } = req.body;
+
+  if (!roomId || !email) {
+    return res.status(400).json({ error: 'Room ID and email are required' });
+  }
+
+  try {
+    const [instant] = await pool.execute(
+      'SELECT creator_email FROM instant_meeting WHERE room_id = ?',
+      [roomId]
+    );
+
+    if (instant.length === 0) {
+      return res.status(404).json({ error: 'Instant meeting not found' });
+    }
+
+    const isHost = instant[0].creator_email === email;
+
+    res.json({ isHost, roomId, userEmail: email });
+
+  } catch (err) {
+    console.error('Claim host instant error:', err);
+    res.status(500).json({ error: 'Server error during instant host verification' });
+  }
+});
+
+
 router.post('/schedule', async (req, res) => {
   const { meetingTitle, creatorId, creatorName, creatorEmail, scheduledDate, scheduledTime, invitees, description, meetingType } = req.body;
 
@@ -147,39 +295,59 @@ router.post('/schedule', async (req, res) => {
   const scheduledDatetime = `${scheduledDate} ${scheduledTime}:00`;
 
   try {
-    const [result] = await pool.execute(
-      `INSERT INTO meetings 
-       (room_id, meeting_title, creator_id, creator_name, creator_email, scheduled_datetime, description, invitees_json, meeting_type, status) 
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'scheduled')`,
-      [
-        roomId,
-        meetingTitle,
-        creatorId,
-        creatorName,
-        creatorEmail,
-        scheduledDatetime,
-        description,
-        JSON.stringify(validInvitees), 
-        meetingType || 'regular',
-      ],
-    );
-
-    const baseUrl = req.protocol + '://' + req.get('host');
-    const link = `${baseUrl}/join/${roomId}`;
-
- 
-    console.log(`Sending email invitations to: ${validInvitees.join(', ')} with link: ${link}`);
-
-    res.json({
-      id: result.insertId,
+  const [result] = await pool.execute(
+    `INSERT INTO meetings 
+     (room_id, meeting_title, creator_id, creator_name, creator_email, scheduled_datetime, description, invitees_json, meeting_type, status) 
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'scheduled')`,
+    [
       roomId,
-      link,
-      message: 'Meeting scheduled successfully',
-    });
-  } catch (err) {
-    console.error('Error scheduling meeting:', err);
-    res.status(500).json({ error: 'Failed to schedule meeting' });
-  }
+      meetingTitle,
+      creatorId,
+      creatorName,
+      creatorEmail,
+      scheduledDatetime,
+      description,
+      JSON.stringify(validInvitees), 
+      meetingType || 'regular',
+    ],
+  );
+
+  const baseUrl = req.protocol + '://' + req.get('host');
+  const link = `${baseUrl}/join/${roomId}`;
+
+  // SEND EMAILS
+  const emailSubject = `You're invited to "${meetingTitle}"`;
+  const emailBody = `
+    <p>Hi,</p>
+    <p>You have been invited to join a meeting.</p>
+    <p><strong>Meeting:</strong> ${meetingTitle}</p>
+    <p><strong>Date & Time:</strong> ${scheduledDate} ${scheduledTime}</p>
+    <p><strong>Creator:</strong> ${creatorName} (${creatorEmail})</p>
+    <p>Click the link below to join:</p>
+    <p><a href="${link}">${link}</a></p>
+    <p>${description || ''}</p>
+  `;
+
+  await Promise.all(validInvitees.map(email => sendEmail({
+    to: email,
+    subject: emailSubject,
+    html: emailBody,
+    replyTo: creatorEmail
+  })));
+
+  console.log(`Invitations sent to: ${validInvitees.join(', ')}`);
+
+  res.json({
+    id: result.insertId,
+    roomId,
+    link,
+    message: 'Meeting scheduled successfully',
+  });
+} catch (err) {
+  console.error('Error scheduling meeting:', err);
+  res.status(500).json({ error: 'Failed to schedule meeting' });
+}
+
 });
 
 router.post('/signup', async (req, res) => {
@@ -191,6 +359,7 @@ router.post('/signup', async (req, res) => {
 
   try {
 
+    //for existing user validation
     const [existingUsers] = await pool.execute('SELECT * FROM users WHERE email = ?', [email]);
     if (existingUsers.length > 0) {
       console.log('User already exists:', email);

@@ -1,3 +1,57 @@
+# Dec 15
+
+Status:
+
+D- its working fine 
+
+On create room it should store to table and when join the room it should validate from table
+
+Here for instant meeting new table has been created named as instant_meeeting
+and for storing and validating the participants or host 
+created the instant_participants table
+
+On creating the room the details are storing in instant_meeting table as well 
+instant_participants for joinees are revalidating. Need to include left_at functionality
+
+
+Schedule meeting need to check the workflow which has been disturbed due to above functionalities.
+Need to verify the meetings table and particpant table.
+
+
+# Tasks
+
+A-icon toggle needs to appear and dont provide alerts toggles for icon mute or video- done
+ 
+B-when camera is off show user name  or icon with name- inital join not working properly when by default video - done
+ 
+C-shorten the key
+
+D-On create room it should store to table and when join the room it should validate from table
+- working
+ 
+E- need to add throtling or debouncing in chatbox
+ 
+F- need to test with 10 members
+ 
+G- test the application through using testing tools
+
+H- Proctor logs and chatbox need to store recheck the functionalities
+
+ 
+
+
+-----------------------------------
+Once again Need to test below:
+
+Join room through key : Need to check when user leave meeting .If user want to re-join than from login its working but not 
+working from join room page need to check
+ 
+From Schedule meeting: when users join more than 2 than 3rd user only showing sef camera but other existing participants
+showing all  streaming
+ 
+When user left the meeting than keys are showing not partticpants and also from other rooms left meeting also displaying
+
+
 # Working files:
 Alert
 Authcontext
@@ -8,6 +62,15 @@ JoinMeetingPage
 Login
 Signup
 SchedulePage
+
+
+# New file in  Progress
+frontend:
+ScheduledMeetings
+
+backend:
+utils/email
+routes/api
 
 
 # Getting Started with Create React App

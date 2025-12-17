@@ -3,6 +3,8 @@ import { useNavigate } from 'react-router-dom';
 import axios from 'axios';
 import { AuthContext } from './AuthContext';
 
+const API_URL = process.env.API_URL ||  "http://localhost:3000";
+
 const LoginPage = () => {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -17,7 +19,8 @@ const LoginPage = () => {
     setError('');
     console.log('Attempting login with:', { email, password });
     try {
-      const response = await axios.post('https://livemeet-ribm.onrender.com/api/login', { email, password });
+      // const response = await axios.post('https://livemeet-ribm.onrender.com/api/login', { email, password });
+       const response = await axios.post(`${API_URL}/api/login`, { email, password });
       console.log('Login response:', response.data);
       
       login(response.data.user, response.data.token);

@@ -6,7 +6,7 @@ import JoinMeetingPage from './components/JoinMeetingPage';
 import SchedulePage from './components/SchedulePage';
 import { AuthContext } from './components/AuthContext';
 import SignupPage from './components/SignupPage';
-
+import ScheduledMeetings from './components/ScheduledMeetings';
 
 const App = () => {
   const [user, setUser] = useState(null);
@@ -53,6 +53,13 @@ const App = () => {
             />
             <Route path="/" element={<Navigate to="/video" replace />} />
             <Route path="*" element={<Navigate to="/video" replace />} />
+            <Route path="/meeting/:roomId" element={
+  <Video isExternal={true} />
+} />
+            <Route path="/scheduled-meetings"
+             element={user ? <ScheduledMeetings /> : <Navigate to="/login" replace />}
+            />
+
           </Routes>
         </div>
         <style>
