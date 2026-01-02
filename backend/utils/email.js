@@ -11,19 +11,37 @@ const nodemailer = require('nodemailer');
 //   },
 // });
 
+
+//render SMTP settings
+// const transporter = nodemailer.createTransport({
+//   host: process.env.SMTP_HOST,
+//   port: 587,
+//   secure: false, // MUST be false for 587 its for render
+//   auth: {
+//     user: process.env.SMTP_USER,
+//     pass: process.env.SMTP_PASS,
+//   },
+//    connectionTimeout: 10000,
+//   // tls: {
+//   //   rejectUnauthorized: false,  
+//   // },
+ 
+// });
+
+//render jan2
 const transporter = nodemailer.createTransport({
-  host: process.env.SMTP_HOST,
-  port: 2525,
-  secure: false, // MUST be false for 587 its for render
+  host: "smtp.gmail.com", // or smtp.office365.com
+  port: 587,
+  secure: false,
   auth: {
     user: process.env.SMTP_USER,
     pass: process.env.SMTP_PASS,
   },
-   connectionTimeout: 10000,
-  tls: {
-    rejectUnauthorized: false,
-  },
+  connectionTimeout: 20000, // ⬅️ increase
+  greetingTimeout: 20000,
+  socketTimeout: 30000,
 });
+
 
 
 const sendEmail = async ({ to, subject, text, html,replyTo }) => {
