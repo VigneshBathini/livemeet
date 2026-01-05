@@ -12,11 +12,11 @@ import axios from 'axios';
 import { set } from 'date-fns';
 
 
-const SIGNALING_SERVER_URL = process.env.API_URL || 'http://localhost:3000';
-const API_URL = process.env.API_URL || "http://localhost:3000";
+// const SIGNALING_SERVER_URL = process.env.API_URL || 'http://localhost:3000';
+// const API_URL = process.env.API_URL || "http://localhost:3000";
 
-// const SIGNALING_SERVER_URL = 'https://livemeet-ribm.onrender.com';
-// const API_URL = "https://livemeet-ribm.onrender.com";
+const SIGNALING_SERVER_URL = 'https://livemeet-ribm.onrender.com';
+const API_URL = "https://livemeet-ribm.onrender.com";
 
 // const API_URL = "http://localhost:3000";
 
