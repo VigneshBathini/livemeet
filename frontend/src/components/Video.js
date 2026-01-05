@@ -1,7 +1,3 @@
-//working code nov 28 with toogles
-//existing functioanlity
-
-
 import React, { useState, useRef, useEffect, useCallback, useContext } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import io from 'socket.io-client';
@@ -15,13 +11,16 @@ import JoinRoom from './JoinRoom';
 import axios from 'axios';
 import { set } from 'date-fns';
 
-const SIGNALING_SERVER_URL = 'https://livemeet-ribm.onrender.com';
 
-// const SIGNALING_SERVER_URL = process.env.API_URL || 'http://localhost:3000';
+const SIGNALING_SERVER_URL = process.env.API_URL || 'http://localhost:3000';
+const API_URL = process.env.API_URL || "http://localhost:3000";
 
-// const API_URL = process.env.API_URL || "http://localhost:3000";
+// const SIGNALING_SERVER_URL = 'https://livemeet-ribm.onrender.com';
+// const API_URL = "https://livemeet-ribm.onrender.com";
 
-const API_URL = "https://livemeet-ribm.onrender.com";
+// const API_URL = "http://localhost:3000";
+
+// const SIGNALING_SERVER_URL = "http://localhost:3000";
 
 class ErrorBoundary extends React.Component {
   state = { hasError: false };
@@ -95,6 +94,12 @@ const Video = ({ isExternal = false, meetingId, userEmail, userName: propUserNam
   const screenShareTrackRef = useRef(null);
   const screenShareCleanupRef = useRef(null);
   const screenShareActiveRef = useRef(false);
+  const cameraSendersRef = useRef({});
+  const cameraTrackRef = useRef(null);
+  const screenStreamRef = useRef(null);
+  const screenTrackRef = useRef(null);
+  const screenSendersRef = useRef({}); // peerId -> RTCRtpSender
+  const videoSenderRef = useRef(null); // One sender for video (camera or screen)
 
   const localStreamRef = useRef(null);
 
@@ -136,7 +141,7 @@ const Video = ({ isExternal = false, meetingId, userEmail, userName: propUserNam
       setIsHost(data.isHost);
       setInRoom(true);
 
-   
+
       sessionStorage.removeItem('joiningMeeting');
     }
   }, [isExternal]);
@@ -258,12 +263,26 @@ const Video = ({ isExternal = false, meetingId, userEmail, userName: propUserNam
       screenShareTrackRef.current = null;
     }
 
+    // 🔥 FIX: Also remove screen track from local stream
+    if (localStreamRef.current) {
+      const screenTrack = localStreamRef.current.getVideoTracks().find(t => t._type === 'screen');
+      if (screenTrack) {
+        localStreamRef.current.removeTrack(screenTrack);
+        screenTrack.stop();
+        logDebug('Removed screen track from local stream');
+      }
+    }
+
     const cleanupPromises = Object.entries(peersRef.current).map(async ([peerId, peer]) => {
       if (peer && peer._pc) {
         try {
-          const screenSender = peer._pc.getSenders().find((s) => s.track?._type === 'screen');
+          // 🔥 FIX: Also look for _isScreen property
+          const screenSender = peer._pc.getSenders().find((s) =>
+            s.track?._type === 'screen' || s.track?._isScreen === true
+          );
           if (screenSender) {
-            // await screenSender.replaceTrack(null);
+            // 🔥 FIX: Replace with null track to properly remove
+            await screenSender.replaceTrack(null);
             logDebug(`Removed screen track from peer ${peerId}`);
             await renegotiatePeer(peer, peerId, 0, true);
           }
@@ -628,14 +647,14 @@ const Video = ({ isExternal = false, meetingId, userEmail, userName: propUserNam
       const newStatus = {};
 
       users.forEach((u) => {
-       if (u.userId === mySocketId) {
-  if (u.isHost && !isHost) {
-    setIsHost(true);
-    addAlert('You are the Host!', 'success');
-  }
-  // Do NOT have: else if (!u.isHost && isHost) setIsHost(false);
-  return;
-}
+        if (u.userId === mySocketId) {
+          if (u.isHost && !isHost) {
+            setIsHost(true);
+            addAlert('You are the Host!', 'success');
+          }
+          // Do NOT have: else if (!u.isHost && isHost) setIsHost(false);
+          return;
+        }
 
         // CRITICAL: Include videoOn/audioOn from server
         newStatus[u.userId] = {
@@ -709,7 +728,7 @@ const Video = ({ isExternal = false, meetingId, userEmail, userName: propUserNam
 
     socketRef.current.on('screen-share-status', (data) => {
       logDebug(`Received screen share status from ${data.userId} (${data.userName}): isScreenSharing=${data.isScreenSharing}`);
-
+      console.log('data:', connectionStatus);
       setConnectionStatus((prev) => ({
         ...prev,
         [data.userId]: {
@@ -756,6 +775,7 @@ const Video = ({ isExternal = false, meetingId, userEmail, userName: propUserNam
     return () => {
       if (socketRef.current) {
         socketRef.current.disconnect();
+        console.log('Socket disconnected on cleanup 9');
         socketRef.current = null;
       }
     };
@@ -1199,127 +1219,215 @@ const Video = ({ isExternal = false, meetingId, userEmail, userName: propUserNam
       audioOn: willEnable,
     });
   };
+
+
   const toggleScreenShare = async () => {
-    if (!isScreenSharing) {
-      try {
-        if (screenShareActiveRef.current) {
-          await cleanupScreenSharing();
-          await new Promise((resolve) => setTimeout(resolve, 500));
-        }
+  // STOP if already sharing
+  if (screenStreamRef.current) {
+    await stopScreenShare();
+    return;
+  }
 
-        const isProctorEnabled = participantControls[socketRef.current?.id]?.proctor || false;
-        addAlert(
-          isProctorEnabled
-            ? 'Proctor mode requires sharing your entire screen.'
-            : 'Select a screen, window, or tab to share.',
-          'info'
-        );
+  try {
+    const isProctorEnabled =
+      participantControls[socketRef.current?.id]?.proctor || false;
 
-        const videoConstraints = isProctorEnabled ? { video: { displaySurface: 'monitor', cursor: 'never' } } : { video: true };
-        const newScreenStream = await navigator.mediaDevices.getDisplayMedia(videoConstraints);
-        const newScreenTrack = newScreenStream.getVideoTracks()[0];
-        newScreenTrack._type = 'screen';
-        const settings = newScreenTrack.getSettings();
-        logDebug(`Screen share settings: ${JSON.stringify(settings)}`);
+    addAlert(
+      isProctorEnabled
+        ? 'Proctor mode requires sharing your entire screen.'
+        : 'Select a screen, window, or tab to share.',
+      'info'
+    );
 
-        if (isProctorEnabled && settings.displaySurface !== 'monitor') {
-          newScreenTrack.stop();
-          newScreenStream.getTracks().forEach((track) => track.stop());
-          addAlert('Proctor mode requires sharing the entire screen.', 'error');
-          return;
-        }
+    // 1️⃣ Get display media
+    const screenStream = await navigator.mediaDevices.getDisplayMedia({
+      video: isProctorEnabled
+        ? { displaySurface: 'monitor', cursor: 'never' }
+        : { frameRate: 30 },
+      audio: false,
+    });
 
-        screenShareActiveRef.current = true;
-        screenShareTrackRef.current = newScreenTrack;
-        const addTrackPromises = Object.entries(peersRef.current).map(async ([peerId, peer]) => {
-          if (peer && peer._pc && peer._pc.signalingState === 'stable') {
-            try {
-              const existingScreenSender = peer._pc.getSenders().find((s) => s.track?._type === 'screen');
-              if (existingScreenSender) {
-                // await existingScreenSender.replaceTrack(null);
-                logDebug(`Cleaned up existing screen track for peer ${peerId}`);
-                await new Promise((resolve) => setTimeout(resolve, 100));
-              }
-              peer._pc.addTrack(newScreenTrack, newScreenStream);
-              logDebug(`Added new screen track to peer ${peerId}`);
-              await new Promise((resolve) => setTimeout(resolve, 200));
-              await renegotiatePeer(peer, peerId, 0, true);
-            } catch (err) {
-              logDebug(`Error adding screen track to peer ${peerId}: ${err.message}`);
-            }
-          }
-        });
+    const screenTrack = screenStream.getVideoTracks()[0];
+    screenTrack._type = 'screen';
 
-        await Promise.all(addTrackPromises);
-        setScreenStream(newScreenStream);
-        setIsScreenSharing(true);
-        addAlert(isProctorEnabled ? 'Screen sharing started (entire screen).' : 'Screen sharing started.', 'success');
-
-        const sendScreenShareStatus = (attempt = 1) => {
-          if (socketRef.current?.connected) {
-            socketRef.current.emit('screen-share-status', {
-              roomId,
-              userName,
-              userEmail: email,
-              isScreenSharing: true,
-            });
-            logDebug(`Sent screen-share-status (start) to room ${roomId}`);
-          } else if (attempt <= 5) {
-            logDebug(`Socket not connected, retrying screen-share-status (start) (${attempt}/5)...`);
-            setTimeout(() => sendScreenShareStatus(attempt + 1), 1000);
-          } else {
-            logDebug(`Failed to send screen-share-status (start) after 5 attempts`);
-            addAlert('Failed to notify others of screen sharing start.', 'error');
-          }
-        };
-        sendScreenShareStatus();
-
-        newScreenTrack.onended = () => {
-          logDebug('Screen share track ended by browser/system');
-          stopScreenShare();
-        };
-      } catch (err) {
-        logDebug(`Error starting screen share: ${err.message}`);
-        screenShareActiveRef.current = false;
-        screenShareTrackRef.current = null;
-        if (err.name === 'NotAllowedError') {
-          addAlert('Screen sharing permission denied.', 'error');
-        } else if (err.name === 'NotSupportedError') {
-          addAlert('Browser does not support entire screen sharing. Use Chrome or Edge.', 'error');
-        } else {
-          addAlert('Failed to start screen sharing.', 'error');
-        }
-      }
-    } else {
-      stopScreenShare();
+    // 2️⃣ Proctor validation
+    if (
+      isProctorEnabled &&
+      screenTrack.getSettings().displaySurface !== 'monitor'
+    ) {
+      screenTrack.stop();
+      screenStream.getTracks().forEach(t => t.stop());
+      addAlert('Proctor mode requires sharing the entire screen.', 'error');
+      return;
     }
-  };
 
-  const stopScreenShare = async () => {
-    logDebug('Stopping screen share with full cleanup...');
-    setIsScreenSharing(false);
-    await cleanupScreenSharing();
-    addAlert('Screen sharing stopped.', 'info');
+    // 3️⃣ Store refs
+    screenStreamRef.current = screenStream;
+    screenTrackRef.current = screenTrack;
 
-    const sendScreenShareStatus = (attempt = 1) => {
-      if (socketRef.current?.connected) {
-        socketRef.current.emit('screen-share-status', {
-          roomId,
-          userName,
-          userEmail: email,
-          isScreenSharing: false,
+    setScreenStream(screenStream);
+    setIsScreenSharing(true);
+
+    // 4️⃣ Clear previous screen senders completely
+Object.keys(screenSendersRef.current).forEach(peerId => {
+  delete screenSendersRef.current[peerId];
+});
+
+// 5️⃣ Create fresh senders for each peer
+const renegotiationPromises = [];
+let hasAnyScreenSender = false;
+
+Object.entries(peersRef.current).forEach(([peerId, peer]) => {
+  const pc = peer?._pc;
+  if (!pc) return;
+
+  // Check if there's already a screen track in the connection
+  const existingScreenSender = pc.getSenders().find(s => 
+    s.track?._type === 'screen'
+  );
+
+  try {
+    let newSender;
+
+    if (existingScreenSender) {
+      // Replace existing screen track
+      newSender = existingScreenSender;
+      existingScreenSender.replaceTrack(screenTrack)
+        .then(() => {
+          logDebug(`Replaced screen track for ${peerId}`);
+        })
+        .catch(err => {
+          logDebug(`replaceTrack failed, creating new sender for ${peerId}: ${err.message}`);
+          // Fallback to creating new sender
+          const fallbackSender = pc.addTrack(screenTrack, screenStream);
+          screenSendersRef.current[peerId] = fallbackSender;
+          hasAnyScreenSender = true;
         });
-        logDebug(`Sent screen-share-status (stop) to room ${roomId}`);
-      } else if (attempt <= 5) {
-        logDebug(`Socket not connected, retrying screen-share-status (stop) (${attempt}/5)...`);
-        setTimeout(() => sendScreenShareStatus(attempt + 1), 1000);
-      } else {
-        logDebug(`Failed to send screen-share-status (stop) after 5 attempts`);
-        addAlert('Failed to notify others of screen sharing stop.', 'error');
-      }
+    } else {
+      // Create new sender
+      newSender = pc.addTrack(screenTrack, screenStream);
+      screenSendersRef.current[peerId] = newSender;
+      hasAnyScreenSender = true;
+      logDebug(`Created new screen sender for peer ${peerId}`);
+    }
+
+    // Store the sender
+    if (newSender && newSender.track) {
+      screenSendersRef.current[peerId] = newSender;
+    }
+
+  } catch (err) {
+    logDebug(`Error adding screen track to peer ${peerId}: ${err.message}`);
+  }
+
+  // Queue renegotiation
+  renegotiationPromises.push(
+    new Promise((resolve) => {
+      setTimeout(() => {
+        if (hasAnyScreenSender) {
+          renegotiatePeer(peer, peerId, 0, false);
+        }
+        resolve();
+      }, 500);
+    })
+  );
+});
+
+// Wait for renegotiations
+Promise.allSettled(renegotiationPromises).then(() => {
+  logDebug('All renegotiations completed');
+});
+
+    // 6️⃣ Notify peers
+    socketRef.current?.emit('screen-share-status', {
+      roomId,
+      userId: socketRef.current.id,
+      userName,
+      userEmail: email,
+      isScreenSharing: true,
+    });
+
+    addAlert('Screen sharing started.', 'success');
+
+    // 7️⃣ Handle browser stop
+    screenTrack.onended = () => {
+      logDebug('Screen share ended by browser');
+      stopScreenShare();
     };
-    sendScreenShareStatus();
-  };
+
+  } catch (err) {
+    logDebug(`Screen share error: ${err.message}`);
+    addAlert('Failed to start screen sharing.', 'error');
+  }
+};
+
+
+ const stopScreenShare = async () => {
+  if (!screenStreamRef.current) return;
+
+  // 1. Stop all tracks in the stream
+  screenStreamRef.current.getTracks().forEach(track => {
+    if (track.readyState === 'live') {
+      track.stop();
+    }
+  });
+
+  // 2. Clean up each peer connection properly
+  Object.entries(peersRef.current).forEach(([peerId, peer]) => {
+    if (!peer?._pc) return;
+
+    try {
+      // Find the screen sender
+      const senders = peer._pc.getSenders();
+      const screenSender = senders.find(s => 
+        s.track?._type === 'screen' || 
+        (s.track && s.track.id === screenTrackRef.current?.id)
+      );
+
+      if (screenSender) {
+        // Important: Replace with null track FIRST
+        screenSender.replaceTrack(null).catch(() => {});
+        
+        // Remove the sender from the peer connection
+        peer._pc.removeTrack(screenSender);
+        logDebug(`Removed screen sender for peer ${peerId}`);
+      }
+
+      // Also remove from our ref
+      delete screenSendersRef.current[peerId];
+      
+      // Renegotiate to clean up
+      setTimeout(() => {
+        renegotiatePeer(peer, peerId, 0, true);
+      }, 500);
+    } catch (err) {
+      logDebug(`Error cleaning up screen sender for ${peerId}: ${err.message}`);
+    }
+  });
+
+  // 3. Clear refs
+  screenStreamRef.current = null;
+  screenTrackRef.current = null;
+  screenSendersRef.current = {}; // Clear ALL, don't keep null references
+
+  // 4. Update state
+  setScreenStream(null);
+  setIsScreenSharing(false);
+
+  // 5. Notify peers
+  socketRef.current?.emit('screen-share-status', {
+    roomId,
+    userId: socketRef.current?.id,
+    userName,
+    userEmail: email,
+    isScreenSharing: false,
+  });
+
+  addAlert('Screen sharing stopped.', 'info');
+};
+
+
+
 
   const renegotiatePeer = async (peer, userId, retryCount = 0, isCleanup = false) => {
     const queueKey = `${userId}_${isCleanup ? 'cleanup' : 'regular'}`;
@@ -1357,7 +1465,7 @@ const Video = ({ isExternal = false, meetingId, userEmail, userName: propUserNam
       const answerTimeout = setTimeout(() => {
         logDebug(`Timeout waiting for answer from ${userId} (${isCleanup ? 'cleanup' : 'regular'})`);
         delete renegotiationQueue.current[queueKey];
-      }, 15000);
+      }, 500);
 
       socketRef.current.once(`answer_${userId}_${Date.now()}`, (data) => {
         if (data.from === userId) {
@@ -1413,10 +1521,11 @@ const Video = ({ isExternal = false, meetingId, userEmail, userName: propUserNam
     }
   };
 
+
+
   const createPeer = (userId, initiator, retryCount = 0) => {
     logDebug(`Creating peer for ${userId}, initiator: ${initiator}, retry: ${retryCount}`);
 
-    // NEW: Use localStreamRef for synchronous access
     if (!localStreamRef.current) {
       if (retryCount < 5) {
         logDebug(`Local stream not available for peer ${userId}, retrying in 1000ms (${retryCount + 1}/5)...`);
@@ -1428,6 +1537,7 @@ const Video = ({ isExternal = false, meetingId, userEmail, userName: propUserNam
       return null;
     }
 
+    // Create peer WITHOUT stream initially
     const peer = new SimplePeer({
       initiator,
       trickle: true,
@@ -1453,22 +1563,62 @@ const Video = ({ isExternal = false, meetingId, userEmail, userName: propUserNam
 
     peer._id = userId;
 
-    const videoTracks = localStreamRef.current.getVideoTracks();
-    const audioTracks = localStreamRef.current.getAudioTracks();
-    logDebug(`Local stream tracks for peer ${userId}: ${videoTracks.length} video, ${audioTracks.length} audio`);
+    // 🔥 FIX: If screen sharing is already active, attach screen to NEW peer
+if (screenStreamRef.current && screenTrackRef.current) {
+  try {
+    const pc = peer._pc;
 
-    if (isScreenSharing && screenStream && screenShareTrackRef.current) {
-      const screenTrack = screenShareTrackRef.current;
-      if (screenTrack && screenTrack.readyState === 'live') {
-        try {
-          peer._pc.addTrack(screenTrack, screenStream);
-          logDebug(`Added screen share track to new peer ${userId}`);
-          setTimeout(() => renegotiatePeer(peer, userId), 500);
-        } catch (err) {
-          logDebug(`Error adding screen track to new peer ${userId}: ${err.message}`);
-        }
+    const sender = pc.addTrack(
+      screenTrackRef.current,
+      screenStreamRef.current
+    );
+
+    screenSendersRef.current[userId] = sender;
+
+    logDebug(`Attached ACTIVE screen track to late-joining peer ${userId}`);
+
+    // 🔥 Force renegotiation so new peer receives screen
+    setTimeout(() => {
+      renegotiatePeer(peer, userId, 0, true);
+    }, 300);
+
+  } catch (err) {
+    logDebug(`Failed to attach screen to peer ${userId}: ${err.message}`);
+  }
+}
+
+
+    // Manually add all tracks to the peer connection
+    const addAllTracksToPeer = () => {
+      if (!localStreamRef.current) return;
+
+      try {
+        // Add all video tracks from local stream
+        const videoTracks = localStreamRef.current.getVideoTracks();
+        videoTracks.forEach(track => {
+          if (track.readyState === 'live') {
+            peer._pc.addTrack(track, localStreamRef.current);
+            logDebug(`Added video track to peer ${userId}: ${track._type || 'camera'} (${track.id})`);
+          }
+        });
+
+        // Add all audio tracks from local stream
+        const audioTracks = localStreamRef.current.getAudioTracks();
+        audioTracks.forEach(track => {
+          if (track.readyState === 'live') {
+            peer._pc.addTrack(track, localStreamRef.current);
+            logDebug(`Added audio track to peer ${userId}: ${track.id}`);
+          }
+        });
+
+        logDebug(`Total tracks added to peer ${userId}: ${videoTracks.length} video, ${audioTracks.length} audio`);
+      } catch (err) {
+        logDebug(`Error adding tracks to peer ${userId}: ${err.message}`);
       }
-    }
+    };
+
+    // Add tracks after peer is created
+    // setTimeout(addAllTracksToPeer, 100);
 
     peer.on('signal', (signal) => {
       setTimeout(() => {
@@ -1547,6 +1697,16 @@ const Video = ({ isExternal = false, meetingId, userEmail, userName: propUserNam
           const singleTrackStream = new MediaStream([track]);
           pendingRemoteStreams.current[userId][streamType] = singleTrackStream;
           peersRef.current[userId]._remoteStreams[streamType] = singleTrackStream;
+          setConnectionStatus((prev) => ({
+            ...prev,
+            [userId]: {
+              ...prev[userId],
+              streams: {
+                ...prev[userId]?.streams,
+                [streamType]: true,
+              },
+            },
+          }));
           assignPeerStream(userId, streamType, singleTrackStream);
         }
       });
@@ -1596,7 +1756,6 @@ const Video = ({ isExternal = false, meetingId, userEmail, userName: propUserNam
 
 
   const handleUserJoined = (userId, userName, userEmail, isUserHost) => {
-
     if (!userId || userId === 'null' || userId === null) {
       logDebug(` Skipping invalid userId: ${userId} (${userName})`);
       return;
@@ -1640,7 +1799,59 @@ const Video = ({ isExternal = false, meetingId, userEmail, userName: propUserNam
 
     setPeers((prev) => ({ ...prev, [userId]: peer }));
     addAlert(`${userName} joined the meeting.`, 'info');
+
+    // Notify new user about screen sharing status if we're sharing
+    if (isScreenSharing) {
+      setTimeout(() => {
+        socketRef.current?.emit('screen-share-status', {
+          roomId,
+          userId: socketRef.current.id,
+          userName,
+          userEmail: email,
+          isScreenSharing: true,
+        });
+        logDebug(`Notified new user ${userId} about screen sharing status`);
+      }, 1000);
+    }
   };
+
+  // Add this function near your other helper functions
+  const broadcastScreenShareToAll = useCallback(() => {
+    if (!isScreenSharing || !screenShareTrackRef.current) return;
+
+    Object.entries(peersRef.current).forEach(([userId, peer]) => {
+      if (peer && peer._pc && peer._pc.signalingState !== 'closed') {
+        try {
+          const existingScreenSender = peer._pc.getSenders().find(
+            (s) => s.track?._type === 'screen'
+          );
+
+          if (!existingScreenSender && screenShareTrackRef.current) {
+            peer._pc.addTrack(screenShareTrackRef.current, screenStream || localStreamRef.current);
+            logDebug(`Added screen track to peer ${userId} in broadcast`);
+
+            setTimeout(() => {
+              renegotiatePeer(peer, userId, 0, false);
+            }, 300);
+          }
+        } catch (err) {
+          logDebug(`Error broadcasting screen to peer ${userId}: ${err.message}`);
+        }
+      }
+    });
+  }, [isScreenSharing, screenStream, screenShareTrackRef.current]);
+
+  // Add this useEffect to broadcast screen share when new users join
+  useEffect(() => {
+    if (isScreenSharing && Object.keys(peers).length > 0) {
+      // When peers change (new user joins), broadcast screen share
+      const timer = setTimeout(() => {
+        broadcastScreenShareToAll();
+      }, 1000);
+
+      return () => clearTimeout(timer);
+    }
+  }, [peers, isScreenSharing, broadcastScreenShareToAll]);
 
   const handleOffer = (data) => {
     logDebug(`Received offer from ${data.from}: ${JSON.stringify(data.signal).slice(0, 100)}...`);
@@ -1921,6 +2132,7 @@ const Video = ({ isExternal = false, meetingId, userEmail, userName: propUserNam
     if (socketRef.current) {
       socketRef.current.off(); // Remove all listeners
       socketRef.current.disconnect();
+      console.log('Socket disconnected leaveroom');
       socketRef.current = null;
     }
 
