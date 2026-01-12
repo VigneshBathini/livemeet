@@ -1859,7 +1859,7 @@ if (screenStreamRef.current && screenTrackRef.current) {
       // Wait up to 5 seconds for local stream
       let attempts = 0;
       while (!localStreamRef.current && attempts < 50) {
-        await new Promise(resolve => setTimeout(resolve, 500));
+        await new Promise(resolve => setTimeout(resolve, 2000));
         attempts++;
       }
       
