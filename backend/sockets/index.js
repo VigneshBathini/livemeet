@@ -1,6 +1,7 @@
 // socket.js — FINAL WORKING VERSION (DEC 2025)
 const { pool } = require('../config/database');
 
+const rooms = {}; // Track users in each room
 const roomHosts = {};
 const userMediaState = {}; // Track everyone's video/audio state
 
@@ -87,7 +88,8 @@ const setupSocketHandlers = (io) => {
               `INSERT INTO instant_participants 
          (instant_meeting_id, name, email, participant_type, joined_at)
          VALUES (?, ?, ?, ?, NOW())
-         ON DUPLICATE KEY UPDATE joined_at = NOW()`,
+         ON DUPLICATE KEY UPDATE joined_at = NOW(),
+         left_at = NULL`,
               [instantId, userName, userEmail, type]
             );
 
@@ -258,21 +260,58 @@ const setupSocketHandlers = (io) => {
           }
         });
     
-       
+       // In your socket.io server
+socket.on('get-room-users', (roomId, callback) => {
+  if (!rooms[roomId]) {
+    callback([]);
+    return;
+  }
+  
+  const userList = Object.entries(rooms[roomId].users).map(([userId, user]) => ({
+    userId,
+    userName: user.name,
+    userEmail: user.email,
+    isHost: user.isHost,
+    videoOn: user.videoOn || true,
+    audioOn: user.audioOn || true
+  }));
+  
+  callback(userList);
+});
+        // socket.on('screen-share-status', (data) => {
+        //   try {
+        //     console.log(
+        //       `Screen share status from ${socket.id} (${data.userName}) in room ${data.roomId}: ${data.isScreenSharing}`,
+        //     );
+        //     socket.to(data.roomId).emit('screen-share-status', {
+        //       userId: socket.id,
+        //       userName: data.userName,
+        //       isScreenSharing: data.isScreenSharing,
+        //     });
+        //   } catch (err) {
+        //     console.error(`Error handling screen-share-status from ${socket.id}: ${err.message}`);
+        //   }
+        // });
+    
+
         socket.on('screen-share-status', (data) => {
-          try {
-            console.log(
-              `Screen share status from ${socket.id} (${data.userName}) in room ${data.roomId}: ${data.isScreenSharing}`,
-            );
-            socket.to(data.roomId).emit('screen-share-status', {
-              userId: socket.id,
-              userName: data.userName,
-              isScreenSharing: data.isScreenSharing,
-            });
-          } catch (err) {
-            console.error(`Error handling screen-share-status from ${socket.id}: ${err.message}`);
-          }
-        });
+  try {
+    const { roomId, userId, userName, isScreenSharing } = data;
+
+    console.log(
+      `Screen share status from ${userId} (${userName}) in room ${roomId}: ${isScreenSharing}`
+    );
+
+    // Broadcast using the correct userId from client
+    io.to(roomId).emit('screen-share-status', {
+      userId,
+      userName: userName || 'Unknown',
+      isScreenSharing,
+    });
+  } catch (err) {
+    console.error(`Error handling screen-share-status: ${err.message}`);
+  }
+});
     
 
     // User left — show real name
