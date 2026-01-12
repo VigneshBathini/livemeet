@@ -1750,6 +1750,9 @@ if (screenStreamRef.current && screenTrackRef.current) {
 
 
   const handleUserJoined = (userId, userName, userEmail, isUserHost) => {
+
+    
+
     if (!userId || userId === 'null' || userId === null) {
       logDebug(` Skipping invalid userId: ${userId} (${userName})`);
       return;
@@ -1859,7 +1862,7 @@ if (screenStreamRef.current && screenTrackRef.current) {
       // Wait up to 5 seconds for local stream
       let attempts = 0;
       while (!localStreamRef.current && attempts < 50) {
-        await new Promise(resolve => setTimeout(resolve, 2000));
+        await new Promise(resolve => setTimeout(resolve, 100));
         attempts++;
       }
       
@@ -2131,8 +2134,82 @@ if (screenStreamRef.current && screenTrackRef.current) {
       'info'
     );
   };
+
+
+  // Add this function near your other helper functions (around line ~300)
+const cleanupAllPeers = useCallback(() => {
+  logDebug('🧹 Starting comprehensive peer cleanup...');
+  
+  // 1. Destroy all peer connections
+  Object.entries(peersRef.current).forEach(([userId, peer]) => {
+    if (peer && typeof peer.destroy === 'function') {
+      try {
+        peer.destroy();
+        logDebug(`Destroyed peer connection for ${userId}`);
+      } catch (err) {
+        logDebug(`Error destroying peer ${userId}: ${err.message}`);
+      }
+    }
+  });
+  
+  // 2. Clear all peer refs
+  peersRef.current = {};
+  setPeers({});
+  
+  // 3. Clear peer video refs and stop their streams
+  Object.keys(peerVideoRefs.current).forEach(userId => {
+    if (peerVideoRefs.current[userId]) {
+      if (peerVideoRefs.current[userId].camera) {
+        const videoEl = peerVideoRefs.current[userId].camera;
+        if (videoEl.srcObject) {
+          videoEl.srcObject.getTracks().forEach(track => track.stop());
+          videoEl.srcObject = null;
+        }
+      }
+      if (peerVideoRefs.current[userId].screen) {
+        const videoEl = peerVideoRefs.current[userId].screen;
+        if (videoEl.srcObject) {
+          videoEl.srcObject.getTracks().forEach(track => track.stop());
+          videoEl.srcObject = null;
+        }
+      }
+    }
+  });
+  peerVideoRefs.current = {};
+  
+  // 4. Clear all pending data
+  pendingRemoteStreams.current = {};
+  pendingCandidates.current = {};
+  renegotiationQueue.current = {};
+  videoStreamCount.current = {};
+  pendingPeerCreations.current = {};
+  
+  // 5. Clear connection status for all remote users
+  setConnectionStatus(prev => {
+    // Keep only local user status if exists
+    const localUserId = socketRef.current?.id;
+    if (localUserId && prev[localUserId]) {
+      return { [localUserId]: prev[localUserId] };
+    }
+    return {};
+  });
+  
+  // 6. Clear participant controls for remote users
+  setParticipantControls(prev => {
+    const localUserId = socketRef.current?.id;
+    if (localUserId && prev[localUserId]) {
+      return { [localUserId]: prev[localUserId] };
+    }
+    return {};
+  });
+  
+  logDebug('✅ Peer cleanup completed');
+}, [logDebug]);
+
 const leaveRoom = () => {
-  // Stop all tracks
+  logDebug('🚪 Leaving room - starting cleanup...');
+  
+  // Stop all local tracks
   if (localStreamRef.current) {
     localStreamRef.current.getTracks().forEach(track => track.stop());
     localStreamRef.current = null;
@@ -2144,54 +2221,44 @@ const leaveRoom = () => {
     setScreenStream(null);
   }
 
-  // Destroy all peers
-  Object.values(peersRef.current).forEach(peer => {
-    if (peer && typeof peer.destroy === 'function') {
-      peer.destroy();
-    }
-  });
-  peersRef.current = {};
-  setPeers({});
+  // 🔥 CRITICAL: Clean up ALL peers before anything else
+  cleanupAllPeers();
 
-  // Clear pending streams & refs
-  pendingRemoteStreams.current = {};
-  pendingCandidates.current = {};
-  renegotiationQueue.current = {};
-  videoStreamCount.current = {};
+  // Clear intervals
+  Object.values(detectionIntervals.current).forEach(interval => {
+    clearInterval(interval);
+  });
   detectionIntervals.current = {};
-  pendingPeerCreations.current = {};
-  hasJoinedRef.current = false;
-  isJoiningRef.current = false;
-  screenShareActiveRef.current = false;
+
+  // Clear screen sharing refs
   screenShareTrackRef.current = null;
-  
-  // 🔥 FIX: Also clear these refs
+  screenShareActiveRef.current = false;
   screenStreamRef.current = null;
   screenTrackRef.current = null;
   screenSendersRef.current = {};
   cameraSendersRef.current = {};
 
-  // Properly disconnect socket
-  if (socketRef.current) {
-    socketRef.current.off(); // Remove all listeners
-    socketRef.current.disconnect();
-    socketRef.current = null;
-  }
+  // Reset local refs
+  hasJoinedRef.current = false;
+  isJoiningRef.current = false;
 
   // Reset video refs
-  if (userVideoRef.current.camera) userVideoRef.current.camera.srcObject = null;
-  if (userVideoRef.current.screen) userVideoRef.current.screen.srcObject = null;
-  Object.keys(peerVideoRefs.current).forEach(userId => {
-    if (peerVideoRefs.current[userId]) {
-      if (peerVideoRefs.current[userId].camera) {
-        peerVideoRefs.current[userId].camera.srcObject = null;
-      }
-      if (peerVideoRefs.current[userId].screen) {
-        peerVideoRefs.current[userId].screen.srcObject = null;
-      }
-    }
-  });
-  peerVideoRefs.current = {};
+  if (userVideoRef.current.camera) {
+    userVideoRef.current.camera.srcObject = null;
+  }
+  if (userVideoRef.current.screen) {
+    userVideoRef.current.screen.srcObject = null;
+  }
+
+  // Properly disconnect socket with cleanup
+  if (socketRef.current) {
+    // Remove all event listeners first
+    socketRef.current.off();
+    // Disconnect
+    socketRef.current.disconnect();
+    // Clear the ref
+    socketRef.current = null;
+  }
 
   // Reset all state
   setInRoom(false);
@@ -2206,20 +2273,30 @@ const leaveRoom = () => {
   setCurrentVideoPage(1);
   setTotalVideoPages(1);
 
-  // Clear room ID for fresh join
+  // Clear room ID
   setRoomId('');
 
   addAlert('You have left the meeting.', 'info');
 
-  // Navigate appropriately
+  // Handle navigation
   if (isExternal && validated) {
-    window.location.reload(); // Force fresh state for external users
-    navigate(`/join/${meetingId}`, { replace: true });
+    // For scheduled meetings, store data and force reload
+    const meetingData = {
+      roomId: meetingId,
+      userName: propUserName,
+      userEmail: userEmail,
+      isHost: isHostM,
+      timestamp: Date.now(),
+      forceClean: true // Flag to force cleanup on rejoin
+    };
+    sessionStorage.setItem('rejoiningMeeting', JSON.stringify(meetingData));
+    
+    // Force complete reload
+    window.location.href = `/join/${meetingId}`;
   } else {
     navigate('/video', { replace: true });
   }
 };
-
   return (
     <ErrorBoundary>
       <div className="app-container">
