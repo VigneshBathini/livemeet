@@ -2131,136 +2131,94 @@ if (screenStreamRef.current && screenTrackRef.current) {
       'info'
     );
   };
+const leaveRoom = () => {
+  // Stop all tracks
+  if (localStreamRef.current) {
+    localStreamRef.current.getTracks().forEach(track => track.stop());
+    localStreamRef.current = null;
+  }
+  setLocalStream(null);
 
-  const leaveRoom = () => {
-    // window.location.reload();
-    // Stop all tracks
-    if (localStreamRef.current) {
-      localStreamRef.current.getTracks().forEach(track => track.stop());
-      localStreamRef.current = null;
+  if (screenStream) {
+    screenStream.getTracks().forEach(track => track.stop());
+    setScreenStream(null);
+  }
+
+  // Destroy all peers
+  Object.values(peersRef.current).forEach(peer => {
+    if (peer && typeof peer.destroy === 'function') {
+      peer.destroy();
     }
-    setLocalStream(null);
+  });
+  peersRef.current = {};
+  setPeers({});
 
-    if (screenStream) {
-      screenStream.getTracks().forEach(track => track.stop());
-      setScreenStream(null);
-    }
+  // Clear pending streams & refs
+  pendingRemoteStreams.current = {};
+  pendingCandidates.current = {};
+  renegotiationQueue.current = {};
+  videoStreamCount.current = {};
+  detectionIntervals.current = {};
+  pendingPeerCreations.current = {};
+  hasJoinedRef.current = false;
+  isJoiningRef.current = false;
+  screenShareActiveRef.current = false;
+  screenShareTrackRef.current = null;
+  
+  // 🔥 FIX: Also clear these refs
+  screenStreamRef.current = null;
+  screenTrackRef.current = null;
+  screenSendersRef.current = {};
+  cameraSendersRef.current = {};
 
-    // Destroy all peers
-    Object.values(peersRef.current).forEach(peer => {
-      if (peer && typeof peer.destroy === 'function') {
-        peer.destroy();
+  // Properly disconnect socket
+  if (socketRef.current) {
+    socketRef.current.off(); // Remove all listeners
+    socketRef.current.disconnect();
+    socketRef.current = null;
+  }
+
+  // Reset video refs
+  if (userVideoRef.current.camera) userVideoRef.current.camera.srcObject = null;
+  if (userVideoRef.current.screen) userVideoRef.current.screen.srcObject = null;
+  Object.keys(peerVideoRefs.current).forEach(userId => {
+    if (peerVideoRefs.current[userId]) {
+      if (peerVideoRefs.current[userId].camera) {
+        peerVideoRefs.current[userId].camera.srcObject = null;
       }
-    });
-    peersRef.current = {};
-    setPeers({});
-
-    // Clear pending streams & refs
-    pendingRemoteStreams.current = {};
-    pendingCandidates.current = {};
-    renegotiationQueue.current = {};
-    videoStreamCount.current = {};
-    detectionIntervals.current = {};
-    pendingPeerCreations.current = {};
-    hasJoinedRef.current = false;
-    isJoiningRef.current = false;
-    screenShareActiveRef.current = false;
-    screenShareTrackRef.current = null;
-
-    // Properly disconnect socket
-    if (socketRef.current) {
-      socketRef.current.off(); // Remove all listeners
-      socketRef.current.disconnect();
-      console.log('Socket disconnected leaveroom');
-      socketRef.current = null;
-    }
-
-    // Reset video refs
-    if (userVideoRef.current.camera) userVideoRef.current.camera.srcObject = null;
-    if (userVideoRef.current.screen) userVideoRef.current.screen.srcObject = null;
-    Object.keys(peerVideoRefs.current).forEach(userId => {
-      if (peerVideoRefs.current[userId]) {
-        if (peerVideoRefs.current[userId].camera) {
-          peerVideoRefs.current[userId].camera.srcObject = null;
-        }
-        if (peerVideoRefs.current[userId].screen) {
-          peerVideoRefs.current[userId].screen.srcObject = null;
-        }
+      if (peerVideoRefs.current[userId].screen) {
+        peerVideoRefs.current[userId].screen.srcObject = null;
       }
-    });
-    peerVideoRefs.current = {};
-
-    // Reset all state
-    setInRoom(false);
-    setIsHost(false);
-    setConnectionStatus({});
-    setParticipantControls({});
-    setMessages([]);
-    setAlerts([]);
-    setIsVideoOn(true);
-    setIsAudioOn(true);
-    setIsScreenSharing(false);
-    setCurrentVideoPage(1);
-    setTotalVideoPages(1);
-
-
-    // Optional: Force re-render by resetting roomId temporarily
-    // This clears the input field and forces fresh join
-    setRoomId('');
-
-    addAlert('You have left the meeting.', 'info');
-
-    // navigate('/video'); 
-
-    console.log('validity', validated);
-    console.log('isExternal', isExternal);
-
-    if (isExternal && validated) {
-      window.location.reload();
-      navigate(`/join/${meetingId}`, { replace: true });
-    } else {
-      navigate('/video', { replace: true });
     }
+  });
+  peerVideoRefs.current = {};
 
-    // Alert.alert(
-    //   'Left Meeting',
-    //   'You have left the meeting.', 
-    // );
+  // Reset all state
+  setInRoom(false);
+  setIsHost(false);
+  setConnectionStatus({});
+  setParticipantControls({});
+  setMessages([]);
+  setAlerts([]);
+  setIsVideoOn(true);
+  setIsAudioOn(true);
+  setIsScreenSharing(false);
+  setCurrentVideoPage(1);
+  setTotalVideoPages(1);
 
+  // Clear room ID for fresh join
+  setRoomId('');
 
+  addAlert('You have left the meeting.', 'info');
 
-    //  navigate(`/join/${meetingId}`, { replace: true ,validated: false});
-
-    // if(validated){
-    //    window.location.reload();
-    //   console.log('meetingId', meetingId);
-    //   navigate(`/join/${meetingId}`);
-    //   window.location.reload();
-
-    // }
-
-    // else{
-    //    window.location.reload();
-    //   console.log('navigating to video');
-    //   // navigate('/video');
-    // }
-    // window.location.reload();
-    //    if (validated) {
-    //   console.log('meetingId', meetingId);
-    //   navigate(`/join/${meetingId}`, { replace: true });
-    // } else {
-    //   navigate('/video', { replace: true });
-    // }
-    // Critical: Navigate to clean state or force remount
-    // if(!validated){
-    //navigate('/video'); // This should trigger fresh JoinRoom
-    // }
-    // else{ 
-    // console.log('meetingId', meetingId);
-    // // navigate(`/join/${meetingId}`); // This should trigger fresh JoinRoom
-    // window.location.reload();
-    // }
-  };
+  // Navigate appropriately
+  if (isExternal && validated) {
+    window.location.reload(); // Force fresh state for external users
+    navigate(`/join/${meetingId}`, { replace: true });
+  } else {
+    navigate('/video', { replace: true });
+  }
+};
 
   return (
     <ErrorBoundary>
