@@ -528,12 +528,12 @@ useEffect(() => {
       }
 
       // 3. Then ask for current users (very important!)
-      // setTimeout(() => {
-      //   socketRef.current?.emit('get-room-users', roomId, (users) => {
-      //     // ... handle users, create connections
-      //     createConnectionsToExistingUsers(users);
-      //   });
-      // }, 800);
+      setTimeout(() => {
+        socketRef.current?.emit('get-room-users', roomId, (users) => {
+          // ... handle users, create connections
+          createConnectionsToExistingUsers(users);
+        });
+      }, 800);
 
     } catch (err) {
       logDebug("Media error during scheduled join", err);
