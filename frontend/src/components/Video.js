@@ -528,12 +528,12 @@ useEffect(() => {
       }
 
       // 3. Then ask for current users (very important!)
-      setTimeout(() => {
-        socketRef.current?.emit('get-room-users', roomId, (users) => {
-          // ... handle users, create connections
-          createConnectionsToExistingUsers(users);
-        });
-      }, 800);
+      // setTimeout(() => {
+      //   socketRef.current?.emit('get-room-users', roomId, (users) => {
+      //     // ... handle users, create connections
+      //     createConnectionsToExistingUsers(users);
+      //   });
+      // }, 800);
 
     } catch (err) {
       logDebug("Media error during scheduled join", err);
@@ -1075,9 +1075,9 @@ const joinRoom = async () => {
     setInRoom(true);
 
     // IMPORTANT: Create connections to existing users after a delay
-    setTimeout(() => {
-      createConnectionsToExistingUsers();
-    }, 2000);
+    // setTimeout(() => {
+    //   createConnectionsToExistingUsers();
+    // }, 2000);
 
     // Broadcast initial media state
     setTimeout(() => {
@@ -1859,7 +1859,7 @@ if (screenStreamRef.current && screenTrackRef.current) {
       // Wait up to 5 seconds for local stream
       let attempts = 0;
       while (!localStreamRef.current && attempts < 50) {
-        await new Promise(resolve => setTimeout(resolve, 100));
+        await new Promise(resolve => setTimeout(resolve, 500));
         attempts++;
       }
       
