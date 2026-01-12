@@ -23,6 +23,8 @@ const localizer = dateFnsLocalizer({
 // const API_URL = process.env.API_URL || "http://localhost:3000";
 const API_URL = "https://livemeet-ribm.onrender.com";
 
+// const API_URL="http://localhost:3000";
+
 function ScheduledMeetings() {
   const { user } = useContext(AuthContext);
   const [events, setEvents] = useState([]);
@@ -97,18 +99,34 @@ function ScheduledMeetings() {
     alert("Room ID copied!");
   };
 
- const joinMeeting = (meeting) => {
-  // Store meeting data in localStorage or sessionStorage
-  sessionStorage.setItem('joiningMeeting', JSON.stringify({
+const joinMeeting = (meeting) => {
+  console.log('📅 Joining scheduled meeting:', meeting);
+  
+  // Prepare join data
+  const joinData = {
     roomId: meeting.roomId,
     userName: user?.name || 'Participant',
     userEmail: user?.email || '',
-    isHost: meeting.host === user?.email
-  }));
+    isHost: meeting.host === user?.email,
+    meetingTitle: meeting.title,
+    fromScheduled: true,
+    timestamp: Date.now()
+  };
   
-  // Navigate to meeting
-  navigate(`/meeting/${meeting.roomId}`);
+  console.log('💾 Storing join data:', joinData);
+  
+  // Store in sessionStorage (for JoinMeetingPage to detect)
+  sessionStorage.setItem('joiningMeeting', JSON.stringify(joinData));
+  
+  // Navigate to the SAME join link
+  navigate(`/join/${meeting.roomId}`);
+  
+  // Optional: Add a small delay and force scroll to top
+  setTimeout(() => {
+    window.scrollTo(0, 0);
+  }, 50);
 };
+
 
 
   const eventStyleGetter = (event) => {

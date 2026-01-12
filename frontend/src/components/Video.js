@@ -1,3 +1,5 @@
+//jan9 4.45 working code for rejoin too in scheduling
+
 import React, { useState, useRef, useEffect, useCallback, useContext } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import io from 'socket.io-client';
@@ -15,6 +17,9 @@ import { set } from 'date-fns';
 
 const SIGNALING_SERVER_URL = 'https://livemeet-ribm.onrender.com';
 const API_URL = "https://livemeet-ribm.onrender.com";
+
+// const SIGNALING_SERVER_URL = 'http://localhost:3000';
+// const API_URL = "http://localhost:3000";
 
 
 
@@ -71,6 +76,7 @@ const Video = ({ isExternal = false, meetingId, userEmail, userName: propUserNam
   const [participantControls, setParticipantControls] = useState({});
   const [alerts, setAlerts] = useState([]);
   const [showSchedulePage, setShowSchedulePage] = useState(false);
+  const [pendingPeerStreams, setPendingPeerStreams] = useState({});
 
 
   const isAnyScreenSharing = isScreenSharing ||
@@ -303,15 +309,15 @@ const Video = ({ isExternal = false, meetingId, userEmail, userName: propUserNam
   }, [screenStream, logDebug]);
 
   useEffect(() => {
-    if (isExternal && isHostM !== undefined) {
+    if ((isExternal && isHostM !== undefined) || validated) {
       console.log('isHost set from isHostM1:', isHostM);
       setIsHost(isHostM);
       console.log('isHost set from isHostM2:', isHostM);
     }
-  }, [isHostM, isExternal]);
+  }, [isHostM, isExternal, validated]);
 
   useEffect(() => {
-    if (isExternal && isHostM !== undefined) {
+    if ((isExternal && isHostM !== undefined) || validated) {
       setIsHost(!!isHostM);
 
       if (roomId && userName && email && socketRef.current?.connected) {
@@ -492,80 +498,51 @@ const Video = ({ isExternal = false, meetingId, userEmail, userName: propUserNam
   }, [isScreenSharing, participantControls, roomId, userName, email, logDebug, addAlert]);
 
 
-  useEffect(() => {
-    console.log('6 :isExternal && inRoom && !localStreamRef.current && roomId');
-    if (isExternal && inRoom && !localStreamRef.current && roomId && userName && email && !hasJoinedRef.current) {
-      logDebug(`🚀 Starting SINGLE auto-join for ${userName} (${email})`);
-      hasJoinedRef.current = true;
+// In the useEffect that handles auto-join / rejoin for scheduled meetings
+useEffect(() => {
+  if (!isExternal || !validated || !inRoom || localStreamRef.current) return;
 
-      const attemptJoin = async (attempt = 1) => {
-        if (isJoiningRef.current) {
-          logDebug(`⏭️ Auto-join already in progress, skipping`);
-          return;
-        }
+  const joinScheduledMeeting = async () => {
+    try {
+      // 1. First get media — very important order!
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { width: { ideal: 1280 }, height: { ideal: 720 } },
+        audio: true,
+      });
 
-        isJoiningRef.current = true;
+      // Tag & prepare
+      stream.getVideoTracks().forEach(t => { t._type = 'camera'; t.enabled = true; });
+      stream.getAudioTracks().forEach(t => { t.enabled = true; });
 
-        if (!socketRef.current?.connected) {
-          logDebug(`Socket not connected, attempt ${attempt}/5`);
-          isJoiningRef.current = false;
-          if (attempt <= 5) {
-            setTimeout(() => attemptJoin(attempt + 1), 1000);
-            return;
-          }
-          addAlert('Failed to connect to server. Please refresh.', 'error');
-          navigate('/video');
-          return;
-        }
+      localStreamRef.current = stream;
+      setLocalStream(stream);
+      setIsVideoOn(true);
+      setIsAudioOn(true);
 
-        try {
-          const stream = await navigator.mediaDevices.getUserMedia({
-            video: { width: { ideal: 1280 }, height: { ideal: 720 } },
-            audio: { echoCancellation: true, noiseSuppression: true },
-          });
+      logDebug("✓ Stream acquired before join");
 
+      // 2. Now safely join
+      if (socketRef.current?.connected) {
+        socketRef.current.emit('join-room', roomId, socketRef.current.id, userName, email, isHost);
+        logDebug("→ join-room emitted AFTER stream ready");
+      }
 
-          stream.getVideoTracks().forEach((track) => {
-            track.enabled = true;
-            track._type = 'camera';
-          });
-          stream.getAudioTracks().forEach((track) => {
-            track.enabled = true;
-          });
+      // 3. Then ask for current users (very important!)
+      setTimeout(() => {
+        socketRef.current?.emit('get-room-users', roomId, (users) => {
+          // ... handle users, create connections
+          createConnectionsToExistingUsers(users);
+        });
+      }, 800);
 
-          localStreamRef.current = stream;
-          setLocalStream(stream);
-          setIsVideoOn(true);
-          setIsAudioOn(true);
-
-          logDebug('Local stream acquired ONCE for external user');
-
-
-          const joinAsHost = isHost;
-          socketRef.current.emit('join-room', roomId, socketRef.current.id, userName, email, joinAsHost);
-          logDebug(`📡 Emitted join-room with isHost: ${joinAsHost}`);
-
-          setInRoom(true);
-          addAlert(`Joined meeting: ${roomId}`, 'success');
-
-        } catch (err) {
-          logDebug(`Auto-join failed: ${err.message}`);
-          if (attempt <= 5) {
-            isJoiningRef.current = false;
-            setTimeout(() => attemptJoin(attempt + 1), 1000);
-            return;
-          }
-          addAlert(`Failed to join meeting: ${err.message}`, 'error');
-          navigate('/video');
-        } finally {
-          isJoiningRef.current = false;
-        }
-      };
-
-      attemptJoin();
+    } catch (err) {
+      logDebug("Media error during scheduled join", err);
+      addAlert("Cannot access camera/microphone", "error");
     }
-  }, [isExternal, inRoom, roomId, userName, email, isHost]);
+  };
 
+  joinScheduledMeeting();
+}, [isExternal, validated, inRoom, roomId, userName, email, isHost]);
 
   useEffect(() => {
     console.log('7 :localStream with localStreamRef')
@@ -775,7 +752,7 @@ const Video = ({ isExternal = false, meetingId, userEmail, userName: propUserNam
         socketRef.current = null;
       }
     };
-  }, [roomId, inRoom, userName, email, isHost, logDebug, addAlert]);
+  }, [roomId, inRoom, userName, email, isHost, logDebug, addAlert,validated]);
 
   // useEffect(() => {
   //   console.log('10 :  const videoTrack = localStream.getVideoTracks()[0];')
@@ -794,6 +771,12 @@ const Video = ({ isExternal = false, meetingId, userEmail, userName: propUserNam
       chatRef.current.scrollTop = chatRef.current.scrollHeight;
     }
   }, [messages]);
+
+  useEffect(() => {
+  if (inRoom && !localStreamRef.current && socketRef.current?.connected) {
+    joinRoom(); // One clean call
+  }
+}, [inRoom, socketRef.current?.connected]);
 
   useEffect(() => {
     // console.log('11 : if (!isHost) return;')
@@ -910,6 +893,43 @@ const Video = ({ isExternal = false, meetingId, userEmail, userName: propUserNam
   //   return () => clearInterval(interval);
   // }, []);
 
+const createConnectionsToExistingUsers = useCallback((providedUsers = null) => {
+  if (!localStreamRef.current) {
+    logDebug("Cannot create connections — no local stream yet");
+    return;
+  }
+
+  const doCreate = (users) => {
+    if (!Array.isArray(users)) return;
+
+    const others = users.filter(u => u.userId !== socketRef.current?.id);
+
+    logDebug(`Creating connections to ${others.length} existing users`);
+
+    others.forEach(user => {
+      if (peersRef.current[user.userId]) return; // already have
+
+      // Small delay → helps a lot with signaling race
+      setTimeout(() => {
+        if (!peersRef.current[user.userId] && localStreamRef.current) {
+          const peer = createPeer(user.userId, true); // YOU initiate
+          if (peer) {
+            peersRef.current[user.userId] = peer;
+            setPeers(p => ({ ...p, [user.userId]: peer }));
+          }
+        }
+      }, 300 + Math.random() * 400); // tiny jitter helps
+    });
+  };
+
+  if (providedUsers) {
+    doCreate(providedUsers);
+  } else {
+    // Fallback - ask server
+    socketRef.current?.emit('get-room-users', roomId, doCreate);
+  }
+}, [roomId]);
+
   const checkPermissions = async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
@@ -990,115 +1010,93 @@ const Video = ({ isExternal = false, meetingId, userEmail, userName: propUserNam
     }
   };
 
-  const joinRoom = async () => {
-    if (!roomId.trim() || !userName.trim()) {
-      addAlert('Please enter Room ID and username.', 'error');
-      return;
-    }
+const joinRoom = async () => {
+  if (!roomId.trim() || !userName.trim()) {
+    addAlert('Please enter Room ID and username.', 'error');
+    return;
+  }
 
-    if (!(await checkPermissions())) {
-      addAlert('Camera/microphone permissions denied.', 'error');
-      return;
-    }
+  if (!(await checkPermissions())) {
+    addAlert('Camera/microphone permissions denied.', 'error');
+    return;
+  }
 
+  let isHost = false;
+  let valid = false;
 
-    if (!validated) {
-      let isHost = false;
-      let valid = false;
-      try {
+  if (!validated) {
+    try {
+      const res = await axios.post(`${API_URL}/api/validate-instant`, {
+        roomId: roomId.trim(),
+        email: email,
+      });
 
-        // === INSTANT MEETING VALIDATION ===
-        const res = await axios.post(`${API_URL}/api/validate-instant`, {
-          roomId: roomId.trim(),
-          email: email,
-        });
+      valid = res.data.valid;
+      isHost = !!res.data.isHost;
+      setIsHost(isHost);
 
-        valid = res.data.valid;
-        isHost = !!res.data.isHost; // Ensure boolean
-
-        setIsHost(isHost);
-
-        if (!valid) {
-          addAlert('Not authorized to join this meeting.', 'error');
-          return;
-        }
-
-        addAlert(isHost ? 'Welcome back, Host!' : 'Joined instant meeting.', 'success');
-      }
-
-      // else {
-      //   // === SCHEDULED MEETING (validated = true) ===
-      //   const res = await axios.post(`${API_URL}/api/validate-invitee`, {
-      //     meetingId: roomId.trim(),
-      //     email: email,
-      //   });
-
-      //   console.log('validate invitee',res.data)
-
-      //   valid = res.data.valid;
-      //   isHost = !!res.data.isHost; // This is the key fix
-
-      //   if (!valid) {
-      //     addAlert('You are not invited to this meeting.', 'error');
-      //     return;
-      //   }
-
-      //   addAlert(isHost ? 'Welcome, Host!' : 'Joined scheduled meeting.', 'success');
-      // }
-      catch (err) {
-        console.error('Validation error:', err);
-        addAlert(
-          err.response?.data?.message || 'Invalid meeting or access denied.',
-          'error'
-        );
+      if (!valid) {
+        addAlert('Not authorized to join this meeting.', 'error');
         return;
       }
-    }
 
-
-    // Now safely set isHost from validation result
-    // setIsHost(isHost);
-    logDebug(`User role determined: ${isHost ? 'Host' : 'Participant'}`);
-
-    // === Proceed to acquire media and join room ===
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { width: { ideal: 1280 }, height: { ideal: 720 } },
-        audio: { echoCancellation: true, noiseSuppression: true },
-      });
-
-      stream.getVideoTracks().forEach((track) => {
-        track.enabled = true;
-        track._type = 'camera';
-      });
-      stream.getAudioTracks().forEach((track) => (track.enabled = true));
-
-      localStreamRef.current = stream;
-      setLocalStream(stream);
-      setIsVideoOn(true);
-      setIsAudioOn(true);
-      logDebug('Local camera stream acquired successfully.');
-
-      // Emit join with correct isHost value
-      socketRef.current.emit('join-room', roomId, socketRef.current.id, userName, email, isHost);
-      setInRoom(true);
-
-      // Broadcast initial media state
-      setTimeout(() => {
-        socketRef.current.emit('media-state-change', {
-          roomId,
-          userId: socketRef.current.id,
-          userName,
-          videoOn: true,
-          audioOn: true,
-        });
-      }, 1000);
-
+      addAlert(isHost ? 'Welcome back, Host!' : 'Joined instant meeting.', 'success');
     } catch (err) {
-      logDebug(`Error accessing media: ${err.name} - ${err.message}`);
-      addAlert('Failed to access camera/microphone. Check permissions.', 'error');
+      console.error('Validation error:', err);
+      addAlert(
+        err.response?.data?.message || 'Invalid meeting or access denied.',
+        'error'
+      );
+      return;
     }
-  };
+  }
+
+  // === Proceed to acquire media and join room ===
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { width: { ideal: 1280 }, height: { ideal: 720 } },
+      audio: { echoCancellation: true, noiseSuppression: true },
+    });
+
+    stream.getVideoTracks().forEach((track) => {
+      track.enabled = true;
+      track._type = 'camera';
+    });
+    stream.getAudioTracks().forEach((track) => (track.enabled = true));
+
+    localStreamRef.current = stream;
+    setLocalStream(stream);
+    setIsVideoOn(true);
+    setIsAudioOn(true);
+    logDebug('Local camera stream acquired successfully.');
+
+    // Emit join with correct isHost value
+    socketRef.current.emit('join-room', roomId, socketRef.current.id, userName, email, isHost);
+    setInRoom(true);
+
+    // IMPORTANT: Create connections to existing users after a delay
+    setTimeout(() => {
+      createConnectionsToExistingUsers();
+    }, 2000);
+
+    // Broadcast initial media state
+    setTimeout(() => {
+      socketRef.current.emit('media-state-change', {
+        roomId,
+        userId: socketRef.current.id,
+        userName,
+        videoOn: true,
+        audioOn: true,
+      });
+    }, 1000);
+
+  } catch (err) {
+    logDebug(`Error accessing media: ${err.message}`);
+    addAlert('Failed to access camera/microphone. Check permissions.', 'error');
+  }
+};
+
+  
   const toggleVideo = async () => {
     if (!localStreamRef.current) {
       logDebug("No local stream available");
@@ -1576,7 +1574,7 @@ if (screenStreamRef.current && screenTrackRef.current) {
     // 🔥 Force renegotiation so new peer receives screen
     setTimeout(() => {
       renegotiatePeer(peer, userId, 0, true);
-    }, 300);
+    }, 1300);
 
   } catch (err) {
     logDebug(`Failed to attach screen to peer ${userId}: ${err.message}`);
@@ -1788,7 +1786,7 @@ if (screenStreamRef.current && screenTrackRef.current) {
 
     const peer = createPeer(userId, true);
     if (!peer) {
-      logDebug(`❌ Failed to create peer for ${userId}, queuing...`);
+      logDebug(`❌ Failed to  create peer for ${userId}, queuing...`);
       pendingPeerCreations.current[userId] = { userName, userEmail, isUserHost };
       return;
     }
@@ -1849,8 +1847,34 @@ if (screenStreamRef.current && screenTrackRef.current) {
     }
   }, [peers, isScreenSharing, broadcastScreenShareToAll]);
 
-  const handleOffer = (data) => {
-    logDebug(`Received offer from ${data.from}: ${JSON.stringify(data.signal).slice(0, 100)}...`);
+ const handleOffer = (data) => {
+  logDebug(`Received offer from ${data.from}: ${JSON.stringify(data.signal).slice(0, 100)}...`);
+  
+  // CRITICAL FIX: Wait for local stream before processing offer
+  const processOffer = async () => {
+    // If local stream is not ready, wait for it
+    if (!localStreamRef.current) {
+      logDebug(`⏳ Local stream not ready for offer from ${data.from}, waiting...`);
+      
+      // Wait up to 5 seconds for local stream
+      let attempts = 0;
+      while (!localStreamRef.current && attempts < 50) {
+        await new Promise(resolve => setTimeout(resolve, 100));
+        attempts++;
+      }
+      
+      if (!localStreamRef.current) {
+        logDebug(`❌ Local stream still not ready after 5 seconds, queuing offer...`);
+        // Queue the offer for later processing
+        if (!pendingCandidates.current[data.from]) {
+          pendingCandidates.current[data.from] = [];
+        }
+        pendingCandidates.current[data.from].push(data.signal);
+        return;
+      }
+    }
+    
+    // Now process the offer with local stream available
     let peer = peersRef.current[data.from];
     if (!peer) {
       logDebug(`No peer found for ${data.from}, creating new peer...`);
@@ -1867,6 +1891,7 @@ if (screenStreamRef.current && screenTrackRef.current) {
         return;
       }
     }
+    
     if (peer._pc.signalingState === 'stable' || peer._pc.signalingState === 'have-local-offer') {
       try {
         peer.signal(data.signal);
@@ -1883,6 +1908,9 @@ if (screenStreamRef.current && screenTrackRef.current) {
       pendingCandidates.current[data.from].push(data.signal);
     }
   };
+  
+  processOffer();
+};
 
   const handleAnswer = (data) => {
     logDebug(`Received answer from ${data.from}`);
@@ -1904,19 +1932,34 @@ if (screenStreamRef.current && screenTrackRef.current) {
     }
   };
 
-  const handleIceCandidate = (data) => {
-    logDebug(`Received ICE candidate from ${data.from}`);
-    const peer = peersRef.current[data.from];
-    if (peer) {
+ const handleIceCandidate = (data) => {
+  logDebug(`Received ICE candidate from ${data.from}`);
+  const peer = peersRef.current[data.from];
+  
+  if (peer) {
+    try {
       peer.signal({ candidate: data.candidate });
-    } else {
-      logDebug(`Peer not ready for ICE candidate from ${data.from}, queuing...`);
-      if (!pendingCandidates.current[data.from]) {
-        pendingCandidates.current[data.from] = [];
-      }
-      pendingCandidates.current[data.from].push({ candidate: data.candidate });
+    } catch (err) {
+      logDebug(`Error applying ICE candidate from ${data.from}: ${err.message}`);
     }
-  };
+  } else {
+    logDebug(`Peer not ready for ICE candidate from ${data.from}, queuing...`);
+    
+    // Initialize queue if it doesn't exist
+    if (!pendingCandidates.current[data.from]) {
+      pendingCandidates.current[data.from] = [];
+    }
+    
+    // Store the candidate
+    pendingCandidates.current[data.from].push({ candidate: data.candidate });
+    
+    // Limit queue size to prevent memory issues
+    if (pendingCandidates.current[data.from].length > 20) {
+      pendingCandidates.current[data.from] = pendingCandidates.current[data.from].slice(-10);
+      logDebug(`Trimmed ICE candidate queue for ${data.from} to 10 items`);
+    }
+  }
+};
 
   const handleUserLeft = (userId, serverName) => {
     console.log('server name', serverName)
@@ -3350,3 +3393,4 @@ if (screenStreamRef.current && screenTrackRef.current) {
 };
 
 export default Video;
+
