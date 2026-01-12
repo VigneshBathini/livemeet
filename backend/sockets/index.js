@@ -261,23 +261,35 @@ const setupSocketHandlers = (io) => {
         });
     
        // In your socket.io server
-socket.on('get-room-users', (roomId, callback) => {
-  if (!rooms[roomId]) {
-    callback([]);
-    return;
-  }
-  
-  const userList = Object.entries(rooms[roomId].users).map(([userId, user]) => ({
-    userId,
-    userName: user.name,
-    userEmail: user.email,
-    isHost: user.isHost,
-    videoOn: user.videoOn || true,
-    audioOn: user.audioOn || true
-  }));
-  
-  callback(userList);
-});
+  socket.on('get-room-users', (roomId, callback) => {
+      console.log(`get-room-users called for room: ${roomId}`);
+      
+      if (!rooms[roomId]) {
+        console.log(`Room ${roomId} not found in rooms object`);
+        callback([]);
+        return;
+      }
+
+      const roomUsers = [];
+      for (const [sockId, userData] of Object.entries(rooms[roomId])) {
+        // Skip the requesting user themselves
+        if (sockId === socket.id) continue;
+        
+        roomUsers.push({
+          userId: userData.userId,
+          socketId: sockId,
+          userName: userData.userName,
+          userEmail: userData.userEmail,
+          isHost: userData.isHost,
+          videoOn: userMediaState[userData.userId]?.videoOn ?? true,
+          audioOn: userMediaState[userData.userId]?.audioOn ?? true,
+        });
+      }
+
+      console.log(`Sending ${roomUsers.length} users to ${socket.id} for room ${roomId}`);
+      callback(roomUsers);
+    });
+
         // socket.on('screen-share-status', (data) => {
         //   try {
         //     console.log(
