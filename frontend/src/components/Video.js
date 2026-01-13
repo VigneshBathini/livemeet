@@ -1,3 +1,5 @@
+//updated code of UI related
+
 //jan9 4.45 working code for rejoin too in scheduling
 
 import React, { useState, useRef, useEffect, useCallback, useContext } from 'react';
@@ -12,6 +14,15 @@ import JoinRoom from './JoinRoom';
 
 import axios from 'axios';
 import { set } from 'date-fns';
+
+// Import Components
+import Alert from './Alert';
+import VideoControls from './VideoControls';
+import ChatPanel from './ChatPanel';
+import MeetingHeader from './MeetingHeader';
+import VideoLayout from './VideoLayout';
+import DebugPanel from './DebugPanel';
+
 
 
 
@@ -38,19 +49,19 @@ class ErrorBoundary extends React.Component {
   }
 }
 
-const Alert = ({ message, type, onClose }) => {
-  useEffect(() => {
-    const timer = setTimeout(onClose, 5000);
-    return () => clearTimeout(timer);
-  }, [onClose]);
+// const Alert = ({ message, type, onClose }) => {
+//   useEffect(() => {
+//     const timer = setTimeout(onClose, 5000);
+//     return () => clearTimeout(timer);
+//   }, [onClose]);
 
-  return (
-    <div className={`alert alert-${type}`}>
-      {message}
-      <button onClick={onClose} className="alert-close">×</button>
-    </div>
-  );
-};
+//   return (
+//     <div className={`alert alert-${type}`}>
+//       {message}
+//       <button onClick={onClose} className="alert-close">×</button>
+//     </div>
+//   );
+// };
 
 const Video = ({ isExternal = false, meetingId, userEmail, userName: propUserName, isHostM, validated = false }) => {
   const { user, logout } = useContext(AuthContext);
@@ -77,11 +88,13 @@ const Video = ({ isExternal = false, meetingId, userEmail, userName: propUserNam
   const [alerts, setAlerts] = useState([]);
   const [showSchedulePage, setShowSchedulePage] = useState(false);
   const [pendingPeerStreams, setPendingPeerStreams] = useState({});
-
+  const [currentVideoPage, setCurrentVideoPage] = useState(1);
+  const [totalVideoPages, setTotalVideoPages] = useState(1);
 
   const isAnyScreenSharing = isScreenSharing ||
     Object.values(connectionStatus).some(status => status?.streams?.screen === true);
 
+  // Keep all the existing refs (they remain the same)
   const lastTabSwitch = useRef(0);
   const renegotiationQueue = useRef({});
   const pendingRemoteStreams = useRef({});
@@ -100,18 +113,16 @@ const Video = ({ isExternal = false, meetingId, userEmail, userName: propUserNam
   const cameraTrackRef = useRef(null);
   const screenStreamRef = useRef(null);
   const screenTrackRef = useRef(null);
-  const screenSendersRef = useRef({}); // peerId -> RTCRtpSender
-  const videoSenderRef = useRef(null); // One sender for video (camera or screen)
-
+  const screenSendersRef = useRef({});
+  const videoSenderRef = useRef(null);
   const localStreamRef = useRef(null);
-
   const pendingPeerCreations = useRef({});
-
   const hasJoinedRef = useRef(false);
   const isJoiningRef = useRef(false);
 
-  const [currentVideoPage, setCurrentVideoPage] = useState(1);
-  const [totalVideoPages, setTotalVideoPages] = useState(1);
+
+  // const [currentVideoPage, setCurrentVideoPage] = useState(1);
+  // const [totalVideoPages, setTotalVideoPages] = useState(1);
 
 
   // Initials helper
@@ -2356,15 +2367,13 @@ const cleanupAllPeers = useCallback(() => {
             />
           ))}
         </div>
+
         {!inRoom ? (
-          // Key fix: Conditional rendering based on isExternal
           validated ? (
-            // External users: Show redirect message (useEffect above handles actual nav)
             <div className="redirecting-container">
               <div className="redirecting-message">
                 <i className="fas fa-spinner fa-spin"></i>
                 <p>Returning to join form...</p>
-
               </div>
             </div>
           ) : (
@@ -2383,355 +2392,76 @@ const cleanupAllPeers = useCallback(() => {
           )
         ) : (
           <div className="conference-room">
-            <header className="top-bar">
-              <div className="meeting-info">
-                <h2>Meeting ID: {roomId} {isHost ? '(Host)' : ''}</h2>
-                <span>{Object.keys(peers).length + 1} participant(s)</span>
-              </div>
-              <div className="top-controls">
-                <button onClick={() => setShowChat(!showChat)} title={showChat ? 'Hide Chat' : 'Show Chat'}>
-                  <i className="fas fa-comment"></i>
-                </button>
-                <button onClick={() => setShowDebug(!showDebug)} title={showDebug ? 'Hide Debug' : 'Show Debug'}>
-                  <i className="fas fa-bug"></i>
-                </button>
-                {!isExternal && <button onClick={logout} title="Log Out">Log Out</button>}
-              </div>
-            </header>
+            <MeetingHeader
+              roomId={roomId}
+              isHost={isHost}
+              peers={peers}
+              showChat={showChat}
+              setShowChat={setShowChat}
+              showDebug={showDebug}
+              setShowDebug={setShowDebug}
+              logout={logout}
+              isExternal={isExternal}
+              leaveRoom={leaveRoom}
+            />
 
             <div className="main-content">
               <div className="video-container">
-                <div className={`video-gallery ${isAnyScreenSharing ? 'has-screen-share' : 'no-screen-share'}`}>
-
-                  {/* Screen Share + Camera Layout */}
-                  <div className="video-layout-container">
-                    {/* Screen Share Section - Left Side when active */}
-                    {isAnyScreenSharing && (
-                      <div className="screen-share-section">
-                        {/* Remote screen shares */}
-                        {Object.keys(peers).map((userId) => {
-                          const status = connectionStatus[userId];
-                          if (status?.streams?.screen) {
-                            return (
-                              <div className="video-item screen-share-item" key={`${userId}-screen`}>
-                                <div className="video-wrapper screen-share-video">
-                                  <video
-                                    ref={(el) => {
-                                      if (el) {
-                                        peerVideoRefs.current[userId] = peerVideoRefs.current[userId] || {};
-                                        peerVideoRefs.current[userId].screen = el;
-                                        if (pendingRemoteStreams.current[userId]?.screen) {
-                                          el.srcObject = pendingRemoteStreams.current[userId].screen;
-                                          el.play().catch(() => { });
-                                          pendingRemoteStreams.current[userId].screen = null;
-                                        }
-                                      }
-                                    }}
-                                    autoPlay
-                                    playsInline
-                                    className="video-element screen-element"
-                                  />
-                                  <div className="video-overlay">
-                                    <span className="video-name">
-                                      {status?.userName || `Participant (${shortId(userId)})`} - Screen Share
-                                    </span>
-                                    <div className="video-status">
-                                      <i className="fas fa-desktop"></i>
-                                      <span>Screen Sharing</span>
-                                    </div>
-                                  </div>
-                                </div>
-                              </div>
-                            );
-                          }
-                          return null;
-                        })}
-
-                        {/* Local screen share */}
-                        {isScreenSharing && (
-                          <div className="video-item screen-share-item local-screen-share">
-                            <div className="video-wrapper screen-share-video">
-                              <video
-                                ref={(el) => (userVideoRef.current.screen = el)}
-                                autoPlay
-                                muted
-                                playsInline
-                                className="video-element screen-element"
-                              />
-                              <div className="video-overlay">
-                                <span className="video-name">You ({userName}) - Screen Share</span>
-                                <div className="video-status">
-                                  <i className="fas fa-desktop"></i>
-                                  <span>You are sharing screen</span>
-                                </div>
-                              </div>
-                            </div>
-                          </div>
-                        )}
-                      </div>
-                    )}
-
-
-                    {/* Camera Videos Section - Right Side */}
-                    <div className="camera-videos-section">
-                      {/* Render ALL videos from getCurrentPageCameraVideos */}
-                      {getCurrentPageCameraVideos().map((videoId) => {
-                        if (videoId === 'local') {
-                          // Local user camera - FIXED: Ensure local video is always properly assigned
-                          return (
-                            <div className="video-item local-video" key="local">
-                              <div className="video-wrapper">
-                                <video
-                                  ref={(el) => {
-                                    if (el && userVideoRef.current.camera !== el) {
-                                      userVideoRef.current.camera = el;
-                                      logDebug(`Local video element READY on page ${currentVideoPage}`);
-
-                                      // Always ensure local stream is assigned
-                                      if (localStreamRef.current && !el.srcObject) {
-                                        el.srcObject = localStreamRef.current;
-                                        el.play().catch((err) => {
-                                          logDebug(`Error playing local stream on page ${currentVideoPage}: ${err.message}`);
-                                        });
-                                        logDebug(`Assigned local stream to video element on page ${currentVideoPage}`);
-                                      }
-                                    }
-                                  }}
-                                  autoPlay
-                                  muted
-                                  playsInline
-                                  className="video-element"
-                                />
-                                {!isVideoOn && (
-                                  <div className="initials-avatar">
-                                    <div className="initials-text">{getInitials(userName)}</div>
-                                    <div className="avatar-status">Camera Off</div>
-                                  </div>
-                                )}
-                                <div className="video-overlay">
-                                  <span className="video-name">You ({userName})</span>
-                                  <div className="video-status">
-                                    {isVideoOn ? <i className="fas fa-video"></i> : <i className="fas fa-video-slash"></i>}
-                                    {isAudioOn ? <i className="fas fa-microphone"></i> : <i className="fas fa-microphone-slash"></i>}
-                                  </div>
-                                </div>
-                                {/* Add this right after the <video> tag in the local video block */}
-
-                              </div>
-                            </div>
-
-                          );
-                        } else {
-                          // Remote participant camera
-                          const userId = videoId;
-                          const status = connectionStatus[userId];
-                          const controls = participantControls[userId];
-
-                          // Ensure peer refs exist
-                          if (!peerVideoRefs.current[userId]) {
-                            peerVideoRefs.current[userId] = {};
-                          }
-
-                          return (
-                            <div className="video-item" key={`${userId}-camera`}>
-                              <div className="video-wrapper">
-                                {/* Video (fades out when off) */}
-                                <video
-                                  ref={(el) => {
-                                    if (el && peerVideoRefs.current[userId]?.camera !== el) {
-                                      peerVideoRefs.current[userId].camera = el;
-                                      logDebug(`Video element READY for ${shortId(userId)}`);
-                                      const stream = pendingRemoteStreams.current[userId]?.camera ||
-                                        peersRef.current[userId]?._remoteStreams?.camera;
-                                      if (stream) {
-                                        el.srcObject = stream;
-                                        el.play().catch(() => { });
-                                        pendingRemoteStreams.current[userId].camera = null;
-                                      }
-                                    }
-                                  }}
-                                  autoPlay
-                                  playsInline
-                                  muted={false}
-                                  className="video-element"
-                                  style={{
-                                    opacity: status?.videoOn === false ? 0 : 1,
-                                    transition: 'opacity 0.4s ease',
-                                    position: 'absolute',
-                                    inset: 0,
-                                    width: '100%',
-                                    height: '100%',
-                                    objectFit: 'cover',
-                                    background: '#000',
-                                    zIndex: 1
-                                  }}
-                                />
-
-                                {/* Initials Avatar (shows when camera off) */}
-                                {status?.videoOn === false && (
-                                  <div className="initials-avatar">
-                                    <div className="initials-text">
-                                      {getInitials(status?.userName || 'User')}
-                                    </div>
-                                    <div className="avatar-status">Camera Off</div>
-                                  </div>
-                                )}
-
-                                {/* OVERLAY — ALWAYS VISIBLE (this is the fix!) */}
-                                <div className="video-overlay">
-                                  <span className="video-name">
-                                    {status?.userName || `Participant (${shortId(userId)})`}
-                                    {status?.streams?.screen && " (sharing)"}
-                                  </span>
-                                  <div className="video-status">
-                                    {isHost ? (
-                                      <div className="proctor-controls">
-                                        <button
-                                          onClick={() => toggleParticipantMedia(userId, 'video')}
-                                          disabled={status?.videoOn === false}
-                                        >
-                                          {status?.videoOn !== false
-                                            ? <i className="fas fa-video"></i>
-                                            : <i className="fas fa-video-slash text-danger"></i>
-                                          }
-                                        </button>
-
-                                        <button
-                                          onClick={() => toggleParticipantMedia(userId, 'audio')}
-                                          disabled={status?.audioOn === false}
-                                        >
-                                          {status?.audioOn !== false
-                                            ? <i className="fas fa-microphone"></i>
-                                            : <i className="fas fa-microphone-slash text-danger"></i>
-                                          }
-                                        </button>
-
-                                        <button onClick={() => toggleParticipantMedia(userId, 'proctor')}>
-                                          {participantControls[userId]?.proctor ? <i className="fas fa-user-check text-success"></i> : <i className="fas fa-user"></i>}
-                                        </button>
-                                      </div>
-                                    ) : (
-                                      <>
-                                        {status?.videoOn !== false ? <i className="fas fa-video"></i> : <i className="fas fa-video-slash text-danger"></i>}
-                                        {status?.audioOn !== false ? <i className="fas fa-microphone"></i> : <i className="fas fa-microphone-slash text-danger"></i>}
-                                        {participantControls[userId]?.proctor && <i className="fas fa-eye text-warning"></i>}
-                                      </>
-                                    )}
-                                  </div>
-                                </div>
-                              </div>
-                            </div>
-                          );
-                        }
-                      })}
-
-                      {/* Slides indicator */}
-                      {isAnyScreenSharing && totalVideoPages > 1 && (
-                        <div className="slides-indicator">
-                          <button
-                            onClick={() => navigateVideoPage('prev')}
-                            className="slide-nav-btn"
-                            title="Previous page"
-                          >
-                            <i className="fas fa-chevron-left"></i>
-                          </button>
-
-                          <span className="slide-counter">
-                            &lt; {currentVideoPage} / {totalVideoPages} &gt;
-                          </span>
-
-                          <button
-                            onClick={() => navigateVideoPage('next')}
-                            className="slide-nav-btn"
-                            title="Next page"
-                          >
-                            <i className="fas fa-chevron-right"></i>
-                          </button>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                </div>
+                <VideoLayout
+                  isAnyScreenSharing={isAnyScreenSharing}
+                  isScreenSharing={isScreenSharing}
+                  peers={peers}
+                  connectionStatus={connectionStatus}
+                  participantControls={participantControls}
+                  isHost={isHost}
+                  toggleParticipantMedia={toggleParticipantMedia}
+                  peerVideoRefs={peerVideoRefs}
+                  pendingRemoteStreams={pendingRemoteStreams}
+                  peersRef={peersRef}
+                  shortId={shortId}
+                  userName={userName}
+                  isVideoOn={isVideoOn}
+                  isAudioOn={isAudioOn}
+                  currentVideoPage={currentVideoPage}
+                  totalVideoPages={totalVideoPages}
+                  navigateVideoPage={navigateVideoPage}
+                  getCurrentPageCameraVideos={getCurrentPageCameraVideos}
+                  localStreamRef={localStreamRef}
+                  logDebug={logDebug}
+                  userVideoRef={userVideoRef}
+                />
               </div>
 
-              {/* Chat Panel */}
-              {/* Chat Panel */}
-              <div className={`side-panel ${showChat ? 'open' : ''}`}>
-                <div className="chat-container">
-                  <div className="chat-header">
-                    <h3>Chat</h3>
-                    <button onClick={() => setShowChat(false)} title="Close chat">
-                      <i className="fas fa-times"></i>
-                    </button>
-                  </div>
-                  <div className="chat-messages-wrapper">
-                    <div className="chat-messages" ref={chatRef}>
-                      {messages.map((msg, index) => (
-                        <div key={index} className={`chat-message ${msg.from === socketRef.current.id ? 'own-message' : ''}`}>
-                          <div className="chat-meta">
-                            <span className="chat-sender">{msg.from === socketRef.current.id ? 'You' : msg.userName}</span>
-                            <span className="chat-time">{msg.time}</span>
-                          </div>
-                          <div className="chat-text">{msg.message}</div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                  <div className="chat-input">
-                    <input
-                      type="text"
-                      value={chatInput}
-                      onChange={(e) => setChatInput(e.target.value)}
-                      placeholder="Type a message..."
-                      onKeyPress={(e) => e.key === 'Enter' && sendChatMessage()}
-                    />
-                    <button onClick={sendChatMessage} title="Send message">
-                      <i className="fas fa-paper-plane"></i>
-                    </button>
-                  </div>
-                </div>
-              </div>
+              <ChatPanel
+                showChat={showChat}
+                setShowChat={setShowChat}
+                messages={messages}
+                chatInput={chatInput}
+                setChatInput={setChatInput}
+                sendChatMessage={sendChatMessage}
+                socketRef={socketRef}
+                userName={userName}
+              />
             </div>
 
             <footer className="bottom-bar">
-              <div className="controls">
-                <button
-                  onClick={toggleVideo}
-                  className={isVideoOn ? '' : 'disabled'}
-                  title={isVideoOn ? 'Turn off camera' : 'Turn on camera'}
-                >
-                  <i className={isVideoOn ? 'fas fa-video' : 'fas fa-video-slash'}></i>
-                </button>
-                <button
-                  onClick={toggleAudio}
-                  className={isAudioOn ? '' : 'disabled'}
-                  title={isAudioOn ? 'Mute' : 'Unmute'}
-                >
-                  <i className={isAudioOn ? 'fas fa-microphone' : 'fas fa-microphone-slash'}></i>
-                </button>
-                <button
-                  onClick={toggleScreenShare}
-                  className={isScreenSharing ? 'sharing' : ''}
-                  title={isScreenSharing ? 'Stop sharing' : 'Share screen'}
-                >
-                  <i className={isScreenSharing ? 'fas fa-desktop' : 'fas fa-share-square'}></i>
-                </button>
-                <button onClick={leaveRoom} title="Leave meeting">
-                  <i className="fas fa-sign-out-alt"></i>
-                </button>
-              </div>
+              <VideoControls
+                toggleVideo={toggleVideo}
+                toggleAudio={toggleAudio}
+                toggleScreenShare={toggleScreenShare}
+                leaveRoom={leaveRoom}
+                isVideoOn={isVideoOn}
+                isAudioOn={isAudioOn}
+                isScreenSharing={isScreenSharing}
+                logout={logout}
+                isExternal={isExternal}
+              />
             </footer>
 
-            {showDebug && (
-              <div className="debug-panel">
-                <h4>Debug Log</h4>
-                <ul>
-                  {debugLog.map((log, index) => (
-                    <li key={index}>{log}</li>
-                  ))}
-                </ul>
-              </div>
-            )}
+            <DebugPanel
+              showDebug={showDebug}
+              debugLog={debugLog}
+            />
           </div>
         )}
 
