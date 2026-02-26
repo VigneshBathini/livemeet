@@ -11,6 +11,7 @@ const pool = mysql.createPool({
   port: process.env.DB_PORT,        
   waitForConnections: true,
   connectionLimit: 20,
+    dateStrings: true ,
   queueLimit: 0,
   ssl: {
     ca: fs.readFileSync(path.join(__dirname, 'ca.pem')),

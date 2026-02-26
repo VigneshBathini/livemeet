@@ -1,0 +1,14 @@
+{
+  "roomId": "room-test-1772105015662",
+  "ok": true,
+  "receivedHistory": [
+    {
+      "from": "zp7VcmUFOPks9Xt2AAAF",
+      "userName": "Host One",
+      "message": "Hello from host1",
+      "time": "4:53:35 PM",
+      "createdAt": "2026-02-26T11:23:35.815Z"
+    }
+  ],
+  "error": null
+}

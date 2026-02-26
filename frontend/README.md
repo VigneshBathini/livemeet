@@ -1,3 +1,66 @@
+# Jan 12
+E- Enhancement of schedule meeting when user logins and join meeting from schedule meeting
+user should able to join the meeting 
+
+F - When normal particpants joins the meeting user should wait in lobby until host admit the permission
+
+{
+  "name": "frontend",
+  "version": "0.1.0",
+  "private": true,
+  "dependencies": {
+    "@testing-library/dom": "^10.4.1",
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.0",
+    "@testing-library/user-event": "^13.5.0",
+    "axios": "^1.13.2",
+    "canvas-confetti": "^1.9.3",
+    "chart.js": "^4.5.1",
+    "date-fns": "^4.1.0",
+    "face-api.js": "^0.22.2",
+    "formik": "^2.4.9",
+    "lucide-react": "^0.554.0",
+    "react": "^19.1.1",
+    "react-big-calendar": "^1.19.4",
+    "react-datepicker": "^8.9.0",
+    "react-dom": "^19.1.1",
+    "react-hot-toast": "^2.6.0",
+    "react-router-dom": "^7.9.3",
+    "react-scripts": "5.0.1",
+    "simple-peer": "^9.11.1",
+    "socket.io-client": "^4.8.1",
+    "web-vitals": "^2.1.4",
+    "webrtc-adapter": "^9.0.3",
+    "yup": "^1.7.1"
+  },
+  "scripts": {
+    "start": "react-scripts start",
+    "build": "react-scripts build",
+    "test": "react-scripts test",
+    "eject": "react-scripts eject"
+  },
+  "eslintConfig": {
+    "extends": [
+      "react-app",
+      "react-app/jest"
+    ]
+  },
+  "browserslist": {
+    "production": [
+      ">0.2%",
+      "not dead",
+      "not op_mini all"
+    ],
+    "development": [
+      "last 1 chrome version",
+      "last 1 firefox version",
+      "last 1 safari version"
+    ]
+  }
+}
+
+
+
 # Dec 15
 
 Status:
@@ -36,6 +99,12 @@ F- need to test with 10 members
 G- test the application through using testing tools
 
 H- Proctor logs and chatbox need to store recheck the functionalities
+
+# Jan 12
+E- Enhancement od schedule meeting when user logins and join meeting from schedule meeting
+user should able to join the meeting 
+
+F - When normal particpants joins the meeting user should wait in looby until host admit the permission
 
  
 

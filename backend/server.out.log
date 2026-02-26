@@ -1,0 +1,87 @@
+[dotenv@17.2.2] injecting env (12) from .env -- tip: 🔐 encrypt with Dotenvx: https://dotenvx.com
+Server running on port 3000
+User connected: mhWZLNKCHEh3-nu5AAAB
+Database connected successfully
+User connected: SFFY1nj9kKXtJIx-AAAD
+login 1
+User connected: 81krlqlAPzqmvHvMAAAF
+login 1
+User connected: GO1nHmh9768WSCeNAAAH
+login 1
+User connected: bST5AjBKCMQN5PsiAAAJ
+Creating instant meeting: {
+  roomId: 'a198bb6b-a5bc-49f9-b192-2a1908c58445',
+  meetingTitle: 'Instant Meeting',
+  creatorId: 6,
+  creatorName: 'Vignesh B',
+  creatorEmail: 'vignesh.bathini@globalsparktek.com'
+}
+[LOBBY] Host requested waiting list for a198bb6b-a5bc-49f9-b192-2a1908c58445 → 0 users
+✅ [INSTANT CREATOR] Vignesh B is creator of instant meeting, allowing direct join
+Vignesh B (Host) joined a198bb6b-a5bc-49f9-b192-2a1908c58445
+Instant meeting found. ID: 446, Type: internal
+Participant inserted into instant meeting.
+Media state: Vignesh B → video:true, audio:true
+Media state: Vignesh B → video:false, audio:true
+Media state: Vignesh B → video:false, audio:false
+[LOBBY] Host requested waiting list for a198bb6b-a5bc-49f9-b192-2a1908c58445 → 0 users
+✅ [INSTANT CREATOR] Vignesh B is creator of instant meeting, allowing direct join
+Vignesh B (Host) joined a198bb6b-a5bc-49f9-b192-2a1908c58445
+Instant meeting found. ID: 446, Type: internal
+Participant inserted into instant meeting.
+Media state: Vignesh B → video:true, audio:true
+Vignesh B disconnected from room a198bb6b-a5bc-49f9-b192-2a1908c58445
+Updated left_at for instant meeting participant: vignesh.bathini@globalsparktek.com
+User connected: 3OOWCtez__xOwKnYAAAL
+login 1
+User connected: KMPZ6zUaIHzX6f-pAAAN
+[LOBBY REQUEST] Sai (sai.bethi@globalsparktek.com) wants to join a198bb6b-a5bc-49f9-b192-2a1908c58445, claims to be host: false
+[LOBBY] Added to waiting: Sai → 1 waiting
+[LOBBY] Host requested waiting list for a198bb6b-a5bc-49f9-b192-2a1908c58445 → 1 users
+Chat message from bST5AjBKCMQN5PsiAAAJ (Vignesh B) in room a198bb6b-a5bc-49f9-b192-2a1908c58445: HI
+Chat message from bST5AjBKCMQN5PsiAAAJ (Vignesh B) in room a198bb6b-a5bc-49f9-b192-2a1908c58445: kcdc
+Chat message from bST5AjBKCMQN5PsiAAAJ (Vignesh B) in room a198bb6b-a5bc-49f9-b192-2a1908c58445: cs
+[LOBBY] Host requested waiting list for a198bb6b-a5bc-49f9-b192-2a1908c58445 → 1 users
+login 1
+User connected: s3XuQEWHw-eCvg5LAAAP
+[LOBBY REQUEST] Sai (sai.bethi@globalsparktek.com) wants to join a198bb6b-a5bc-49f9-b192-2a1908c58445, claims to be host: false
+[LOBBY] Added to waiting: Sai → 1 waiting
+Vignesh B disconnected from room a198bb6b-a5bc-49f9-b192-2a1908c58445
+Updated left_at for instant meeting participant: vignesh.bathini@globalsparktek.com
+User connected: yCHb4zZTOj7RiCDqAAAR
+Creating instant meeting: {
+  roomId: '1d264840-c348-4e3b-bafa-13fa766c26da',
+  meetingTitle: 'Instant Meeting',
+  creatorId: 6,
+  creatorName: 'Vignesh B',
+  creatorEmail: 'vignesh.bathini@globalsparktek.com'
+}
+[LOBBY] Host requested waiting list for 1d264840-c348-4e3b-bafa-13fa766c26da → 0 users
+✅ [INSTANT CREATOR] Vignesh B is creator of instant meeting, allowing direct join
+Vignesh B (Host) joined 1d264840-c348-4e3b-bafa-13fa766c26da
+Instant meeting found. ID: 447, Type: internal
+Participant inserted into instant meeting.
+Media state: Vignesh B → video:true, audio:true
+login 1
+User connected: maFIMI5jGbcAPcOAAAAT
+[LOBBY REQUEST] Sai (sai.bethi@globalsparktek.com) wants to join 1d264840-c348-4e3b-bafa-13fa766c26da, claims to be host: false
+[LOBBY] Added to waiting: Sai → 1 waiting
+[LOBBY] Host requested waiting list for 1d264840-c348-4e3b-bafa-13fa766c26da → 1 users
+[LOBBY APPROVED] Sai (sai.bethi@globalsparktek.com) into 1d264840-c348-4e3b-bafa-13fa766c26da
+Sai (Participant) joined 1d264840-c348-4e3b-bafa-13fa766c26da
+Instant meeting found. ID: 447, Type: external
+Participant inserted into instant meeting.
+Media state: Sai → video:true, audio:true
+get-room-users called for room: 1d264840-c348-4e3b-bafa-13fa766c26da
+Sending 1 users to maFIMI5jGbcAPcOAAAAT for room 1d264840-c348-4e3b-bafa-13fa766c26da
+Media state: Sai → video:false, audio:true
+Media state: Vignesh B → video:false, audio:true
+Chat message from maFIMI5jGbcAPcOAAAAT (Sai) in room 1d264840-c348-4e3b-bafa-13fa766c26da: HI
+Vignesh B disconnected from room 1d264840-c348-4e3b-bafa-13fa766c26da
+Updated left_at for instant meeting participant: vignesh.bathini@globalsparktek.com
+Sai disconnected from room 1d264840-c348-4e3b-bafa-13fa766c26da
+Updated left_at for instant meeting participant: sai.bethi@globalsparktek.com
+login 1
+User connected: hxiMYMNV7fUHC5YKAAAV
+login 1
+User connected: gtaPEKhun4WM-79aAAAX

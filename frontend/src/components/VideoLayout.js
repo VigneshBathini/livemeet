@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import ParticipantVideo from './ParticipantVIdeo';
 
 const VideoLayout = ({
@@ -24,6 +24,41 @@ const VideoLayout = ({
   logDebug,
   userVideoRef
 }) => {
+  const [localVideoReady, setLocalVideoReady] = useState(false);
+
+  useEffect(() => {
+    if (isVideoOn) {
+      setLocalVideoReady(false);
+    }
+  }, [currentVideoPage, isVideoOn, localStreamRef]);
+
+  useEffect(() => {
+    if (!isVideoOn || localVideoReady) return;
+
+    const el = userVideoRef.current?.camera;
+    if (!el) return;
+
+    const interval = setInterval(() => {
+      const hasFrame = el.readyState >= 2 || el.currentTime > 0;
+      if (hasFrame) {
+        setLocalVideoReady(true);
+        clearInterval(interval);
+      }
+    }, 250);
+
+    const safetyTimeout = setTimeout(() => {
+      if (el.srcObject) {
+        setLocalVideoReady(true);
+      }
+      clearInterval(interval);
+    }, 2500);
+
+    return () => {
+      clearInterval(interval);
+      clearTimeout(safetyTimeout);
+    };
+  }, [isVideoOn, localVideoReady, currentVideoPage, userVideoRef]);
+
   const getInitials = (name = '') => {
     return name.trim().split(/\s+/).map(w => w[0]).slice(0, 2).join('').toUpperCase() || '??';
   };
@@ -118,12 +153,15 @@ const VideoLayout = ({
                       ref={(el) => {
                         if (el && userVideoRef.current.camera !== el) {
                           userVideoRef.current.camera = el;
+                          setLocalVideoReady(false);
                           logDebug(`Local video element READY on page ${currentVideoPage}`);
                           if (localStreamRef.current && !el.srcObject) {
                             el.srcObject = localStreamRef.current;
-                            el.play().catch((err) => {
-                              logDebug(`Error playing local stream on page ${currentVideoPage}: ${err.message}`);
-                            });
+                            el.play()
+                              .then(() => setLocalVideoReady(true))
+                              .catch((err) => {
+                                logDebug(`Error playing local stream on page ${currentVideoPage}: ${err.message}`);
+                              });
                             logDebug(`Assigned local stream to video element on page ${currentVideoPage}`);
                           }
                         }
@@ -132,7 +170,13 @@ const VideoLayout = ({
                       muted
                       playsInline
                       className="video-element"
+                      onLoadedData={() => setLocalVideoReady(true)}
+                      onCanPlay={() => setLocalVideoReady(true)}
+                      onPlaying={() => setLocalVideoReady(true)}
                     />
+                    {isVideoOn && !localVideoReady && (
+                      <div className="video-skeleton">Loading video...</div>
+                    )}
                     {!isVideoOn && (
                       <div className="initials-avatar">
                         <div className="initials-text">{getInitials(userName)}</div>

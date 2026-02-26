@@ -1,17 +1,14 @@
 import React, { useState, useEffect } from 'react';
-import { useParams, useNavigate, useLocation } from 'react-router-dom';
+import { useParams, useLocation } from 'react-router-dom';
 import axios from 'axios';
 import Video from './Video';
 
-// const API_URL = process.env.API_URL || "http://localhost:3000";
-
-const API_URL = "https://livemeet-ribm.onrender.com";
+const API_URL = process.env.API_URL || "http://localhost:3000";
 
 const JoinMeetingPage = ({
   addAlert = (msg, type) => console.log(`${type}: ${msg}`),
 }) => {
   const { meetingId } = useParams();
-  const navigate = useNavigate();
   const location = useLocation();
 
   const [email, setEmail] = useState('');
@@ -20,32 +17,39 @@ const JoinMeetingPage = ({
   const [loading, setLoading] = useState(false);
   const [validated, setValidated] = useState(false);
   const [isHost, setIsHost] = useState(false);
+  const [meetingDetails, setMeetingDetails] = useState(null);
   
-  // NEW: Track if we're joining from scheduled meetings
-  const [isScheduledJoin, setIsScheduledJoin] = useState(false);
-  const [scheduledJoinData, setScheduledJoinData] = useState(null);
+  // For scheduled joins
+  const [isScheduledJoin, setIsScheduledJoin] = useState(!!location.state?.fromScheduled);
+  const [fromLoggedInSchedule, setFromLoggedInSchedule] = useState(!!location.state?.fromLogin);
 
-  // Check if we're joining from scheduled meetings (via sessionStorage or location state)
+  // Check for scheduled meeting join
   useEffect(() => {
-    // Method 1: Check sessionStorage (from ScheduledMeetings)
+    if (location.state?.fromScheduled) {
+      setIsScheduledJoin(true);
+    }
+    if (location.state?.fromLogin) {
+      setFromLoggedInSchedule(true);
+    }
+
     const stored = sessionStorage.getItem('joiningMeeting');
     if (stored) {
       try {
         const data = JSON.parse(stored);
-        
-        // Verify it's for the current meeting
         if (data.roomId === meetingId) {
           console.log('📅 Scheduled meeting join detected:', data);
           setIsScheduledJoin(true);
-          setScheduledJoinData(data);
+          setFromLoggedInSchedule(!!data.fromLogin);
           
-          // Auto-validate for logged-in users joining their scheduled meetings
-          validateScheduledJoin(data);
+          // Auto-fill form for validation
+          setEmail(data.userEmail);
+          setName(data.userName);
           
-          // Clear storage after processing
-          sessionStorage.removeItem('joiningMeeting');
-        } else {
-          console.log('Meeting ID mismatch, clearing stored data');
+          // Auto-validate if possible
+          if (data.userEmail && data.userName) {
+            handleAutoValidate(data.userEmail, data.userName);
+          }
+          
           sessionStorage.removeItem('joiningMeeting');
         }
       } catch (e) {
@@ -53,63 +57,40 @@ const JoinMeetingPage = ({
         sessionStorage.removeItem('joiningMeeting');
       }
     }
-    
-    // Method 2: Check location state (direct navigation)
-    if (location.state?.fromScheduled) {
-      console.log('📅 Scheduled meeting join via location state:', location.state);
-      setIsScheduledJoin(true);
-      setScheduledJoinData(location.state);
-      
-      // Auto-validate
-      validateScheduledJoin(location.state);
-    }
   }, [meetingId, location.state]);
 
-  const validateScheduledJoin = async (data) => {
+  const handleLeaveMeeting = () => {
+    setValidated(false);
+  };
+
+  const handleAutoValidate = async (userEmail, userName) => {
     try {
-      console.log('🔐 Validating scheduled meeting access for:', data.userEmail);
-      
-      const res = await axios.post(
+      setLoading(true);
+      const { data } = await axios.post(
         `${API_URL}/api/validate-invitee`,
-        {
-          meetingId,
-          email: data.userEmail,
-        }
+        { meetingId, email: userEmail }
       );
 
-      if (res.data.valid) {
-        console.log('✅ Scheduled join validated successfully');
+      if (data.valid) {
         setValidated(true);
-        setIsHost(!!res.data.isHost);
-        
-        // Update data with validation results
-        setScheduledJoinData(prev => ({
-          ...prev,
-          ...data,
-          validated: true,
-          isHost: !!res.data.isHost
-        }));
-        
+        setIsHost(!!data.isHost);
         addAlert(
-          `Welcome ${data.userName}! Joining as ${res.data.isHost ? 'HOST' : 'Participant'}...`,
+          `Welcome ${userName}! You're joining as ${data.isHost ? 'HOST' : 'participant'}`,
           'success'
         );
       } else {
-        console.log('❌ Scheduled join validation failed');
         addAlert('You are not authorized to join this meeting', 'error');
-        setIsScheduledJoin(false);
-        setScheduledJoinData(null);
       }
     } catch (err) {
-      console.error('Validation error:', err);
-      addAlert('Failed to validate meeting access', 'error');
-      setIsScheduledJoin(false);
-      setScheduledJoinData(null);
+      console.error('Auto-validation error:', err);
+    } finally {
+      setLoading(false);
     }
   };
 
   const handleValidate = async (e) => {
     e.preventDefault();
+    
     if (!email || !name) {
       setError('Email and name are required');
       addAlert('Email and name are required', 'error');
@@ -125,207 +106,140 @@ const JoinMeetingPage = ({
         { meetingId, email }
       );
 
+      console.log('Validation response:', data); // Debug log
+
       if (data.valid) {
         setValidated(true);
         setIsHost(!!data.isHost);
+        setMeetingDetails(data);
+        
+        // CRITICAL: Add a more specific alert
         addAlert(
-          `Welcome ${name}! Starting as ${data.isHost ? 'HOST' : 'Participant'}...`,
+          `Welcome ${name}! You are ${data.isHost ? 'the HOST' : 'a participant'}`,
           'success'
         );
+        
+        // Log for debugging
+        console.log(`User ${name} (${email}) is host: ${data.isHost}`);
+        console.log(`Meeting creator: ${data.creatorEmail}`);
       } else {
-        setError('You are not invited to this meeting');
+        setError(data.error || 'You are not invited to this meeting');
         addAlert('Invalid invite', 'error');
       }
     } catch (err) {
       const msg = err.response?.data?.error || 'Failed to validate email';
       setError(msg);
       addAlert(msg, 'error');
+      console.error('Validation error:', err);
     } finally {
       setLoading(false);
     }
   };
 
-  // RENDER LOGIC:
-  // 1. If scheduled join AND validated → Show Video directly
-  // 2. If normal validation succeeded → Show Video
-  // 3. Otherwise → Show join form
-
-  // Case 1: Scheduled join (logged-in user from ScheduledMeetings)
-  if (isScheduledJoin && scheduledJoinData?.validated) {
-    return (
-      <Video
-        key={`scheduled-${meetingId}-${Date.now()}`}
-        isExternal={false} // Important: logged-in user
-        meetingId={meetingId}
-        userEmail={scheduledJoinData.userEmail}
-        userName={scheduledJoinData.userName}
-        isHostM={scheduledJoinData.isHost}
-        addAlert={addAlert}
-        validated={true}
-      />
-    );
-  }
-
-  // Case 2: Normal guest validation succeeded
+  // If validated, show Video component
   if (validated) {
     return (
       <Video
-        key={`guest-${meetingId}-${email}-${Date.now()}`}
-        isExternal={true} // External guest
+        key={`${meetingId}-${email}-${Date.now()}`} // Force re-render
+        isExternal={true} // Always true for this page (external/guest users)
         meetingId={meetingId}
         userEmail={email}
         userName={name}
-        isHostM={isHost}
-        addAlert={addAlert}
+        isHostM={isHost} // Pass the isHost value correctly
         validated={true}
+        joinSource={fromLoggedInSchedule ? 'scheduled' : (isScheduledJoin ? 'scheduled-link' : 'invite')}
+        leaveRedirectPath={fromLoggedInSchedule ? '/scheduled-meetings' : null}
+        onLeaveMeeting={!fromLoggedInSchedule ? handleLeaveMeeting : null}
+        addAlert={addAlert}
       />
     );
   }
 
-  // Case 3: Show join form (for both scheduled joins that failed validation AND new guests)
+  // Show join form
   return (
-    <div className="join-meeting-page min-h-screen flex flex-col items-center justify-center py-6 overflow-auto">
-      <div className="form-container">
-        <h2>
-          {isScheduledJoin ? 'Joining Scheduled Meeting' : 'Join Meeting'}
-        </h2>
-        
-        {isScheduledJoin && scheduledJoinData && (
-          <div className="scheduled-info">
-            <p><strong>Meeting:</strong> {scheduledJoinData.meetingTitle || 'Scheduled Meeting'}</p>
-            <p><strong>User:</strong> {scheduledJoinData.userName}</p>
-            <p className="validating">Validating access...</p>
-          </div>
-        )}
-
-        <form onSubmit={handleValidate} className="space-y-4">
-          {!isScheduledJoin && (
-            <>
-              <div className="form-group">
-                <label>Email</label>
-                <input
-                  type="email"
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  placeholder="Enter your email"
-                  required
-                />
-              </div>
-
-              <div className="form-group">
-                <label>Name</label>
-                <input
-                  type="text"
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
-                  placeholder="Enter your name"
-                  required
-                />
-              </div>
-            </>
-          )}
-
-          {error && <div className="error">{error}</div>}
-
-          <button type="submit" disabled={loading || isScheduledJoin}>
-            {loading ? 'Validating...' : 
-             isScheduledJoin ? 'Auto-joining...' : 'Validate and Join'}
-          </button>
+    <div className="join-meeting-page min-h-screen flex flex-col items-center justify-center py-6 overflow-auto bg-gray-900 text-white">
+      <div className="w-full max-w-md p-8 rounded-xl bg-gray-800 shadow-2xl">
+        <div className="text-center mb-8">
+          <h1 className="text-3xl font-bold mb-2">Join Meeting</h1>
+          <p className="text-gray-400">Meeting ID: {meetingId}</p>
           
           {isScheduledJoin && (
-            <button 
-              type="button" 
-              className="cancel-btn"
-              onClick={() => {
-                setIsScheduledJoin(false);
-                setScheduledJoinData(null);
-              }}
-            >
-              Cancel Auto-join
-            </button>
+            <div className="mt-4 p-3 bg-blue-900/30 border border-blue-700 rounded-lg">
+              <p className="text-sm text-blue-300">
+                <i className="fas fa-calendar-check mr-2"></i>
+                Scheduled Meeting Join
+              </p>
+            </div>
           )}
-        </form>
-      </div>
+        </div>
 
-      <style>
-        {`
-          .join-meeting-page{background:#16213e;color:#e0e0e0}
-          .form-container{padding:24px;background:#16213e;border-radius:12px;
-            box-shadow:0 4px 20px rgba(0,0,0,.4);width:100%;max-width:500px}
-          .join-meeting-page h2{font-size:22px;font-weight:600;margin-bottom:20px;text-align:center}
-          
-          .scheduled-info {
-            background: rgba(0, 183, 235, 0.1);
-            border-left: 4px solid #00b7eb;
-            padding: 12px;
-            margin-bottom: 20px;
-            border-radius: 4px;
-          }
-          
-          .scheduled-info p {
-            margin: 5px 0;
-            font-size: 14px;
-          }
-          
-          .scheduled-info .validating {
-            color: #00b7eb;
-            font-style: italic;
-          }
-          
-          .form-group{display:flex;align-items:center;margin-bottom:16px;gap:16px}
-          .form-group label{flex:0 0 100px;font-size:14px;text-align:right}
-          .form-group input{flex:1;padding:12px;border:1px solid #2e2e4b;
-            border-radius:6px;font-size:14px;background:#24244a;color:#e0e0e0}
-          .form-group input:focus{border-color:#00b7eb;outline:none}
-          .error{margin:8px 0 0 116px;font-size:13px;color:#ff4d4d}
-          
-          button {
-            margin-left: 116px;
-            width: calc(100% - 116px);
-            padding: 12px;
-            border: none;
-            border-radius: 6px;
-            cursor: pointer;
-            font-size: 14px;
-            color: #e0e0e0;
-            background: linear-gradient(135deg, #00b7eb, #6b48ff);
-            transition: opacity .2s;
-          }
-          
-          button:disabled {
-            opacity: .6;
-            cursor: not-allowed;
-          }
-          
-          button:hover:not(:disabled) {
-            opacity: .9;
-          }
-          
-          .cancel-btn {
-            margin-top: 10px;
-            background: #2e2e4b !important;
-          }
-          
-          .cancel-btn:hover:not(:disabled) {
-            background: #3e3e5b !important;
-          }
-          
-          @media(max-width:640px){
-            .form-container{padding:16px;max-width:100%}
-            .join-meeting-page h2{font-size:18px;margin-bottom:16px}
-            .form-group{flex-direction:column;align-items:flex-start;gap:6px;margin-bottom:12px}
-            .form-group label{flex:none;text-align:left;font-size:12px}
-            .form-group input{width:100%;padding:8px;font-size:12px}
-            .error{margin:6px 0 0 0;font-size:11px}
-            button, .cancel-btn {
-              margin-left: 0;
-              width: 100%;
-              padding: 10px;
-              font-size: 12px;
-            }
-          }
-        `}
-      </style>
+        <form onSubmit={handleValidate} className="space-y-6">
+          <div className="space-y-2">
+            <label className="block text-sm font-medium text-gray-300">
+              Your Email
+            </label>
+            <input
+              type="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              placeholder="you@example.com"
+              className="w-full px-4 py-3 bg-gray-700 border border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent text-white"
+              required
+              disabled={loading}
+            />
+          </div>
+
+          <div className="space-y-2">
+            <label className="block text-sm font-medium text-gray-300">
+              Your Name
+            </label>
+            <input
+              type="text"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="Enter your name"
+              className="w-full px-4 py-3 bg-gray-700 border border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent text-white"
+              required
+              disabled={loading}
+            />
+          </div>
+
+          {error && (
+            <div className="p-3 bg-red-900/30 border border-red-700 rounded-lg">
+              <p className="text-sm text-red-300">{error}</p>
+            </div>
+          )}
+
+          <button
+            type="submit"
+            disabled={loading}
+            className="w-full py-3 px-4 bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-700 hover:to-purple-700 text-white font-semibold rounded-lg shadow-lg transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {loading ? (
+              <span className="flex items-center justify-center">
+                <i className="fas fa-spinner fa-spin mr-2"></i>
+                Validating...
+              </span>
+            ) : (
+              'Join Meeting'
+            )}
+          </button>
+
+          <div className="text-center text-sm text-gray-400 mt-4">
+            <p>You'll need to be approved by the host to join</p>
+          </div>
+        </form>
+
+        <div className="mt-8 pt-6 border-t border-gray-700">
+          <h3 className="text-lg font-semibold mb-3">Meeting Info</h3>
+          <div className="space-y-2 text-sm text-gray-300">
+            <p><span className="text-gray-500">Meeting ID:</span> {meetingId}</p>
+            <p className="text-gray-400 italic">
+              Enter your email to check if you're invited
+            </p>
+          </div>
+        </div>
+      </div>
     </div>
   );
 };

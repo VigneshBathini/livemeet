@@ -1,5 +1,5 @@
 // components/ParticipantVideo.jsx
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 
 
 const ParticipantVideo = ({
@@ -20,6 +20,8 @@ const ParticipantVideo = ({
   logDebug
 }) => {
   const videoRef = useRef(null);
+  const [cameraReady, setCameraReady] = useState(false);
+  const [screenReady, setScreenReady] = useState(false);
   
   // Clean up on unmount
   useEffect(() => {
@@ -43,15 +45,77 @@ const ParticipantVideo = ({
   const isScreenShare = type === 'screen';
   const isCamera = type === 'camera';
   const status = connectionStatus?.[userId];
-  
-  // If user has left, don't render the video
-  if (status?.status === 'left' || !status) {
-    return null;
-  }  
   const controls = participantControls?.[userId];
   const displayName = status?.userName || userName || `Participant (${shortId(userId)})`;
   const videoOn = isLocal ? localVideoOn : status?.videoOn;
   const audioOn = isLocal ? localAudioOn : status?.audioOn;
+  
+  useEffect(() => {
+    if (isScreenShare) {
+      setScreenReady(false);
+    } else if (isCamera && videoOn !== false) {
+      setCameraReady(false);
+    }
+  }, [isScreenShare, isCamera, videoOn, userId]);
+
+  useEffect(() => {
+    if (!isCamera || videoOn === false || cameraReady) return;
+
+    const el = peerVideoRefs?.current?.[userId]?.camera;
+    if (!el) return;
+
+    const interval = setInterval(() => {
+      const hasFrame = el.readyState >= 2 || el.currentTime > 0;
+      if (hasFrame) {
+        setCameraReady(true);
+        clearInterval(interval);
+      }
+    }, 250);
+
+    const safetyTimeout = setTimeout(() => {
+      if (el.srcObject) {
+        setCameraReady(true);
+      }
+      clearInterval(interval);
+    }, 2500);
+
+    return () => {
+      clearInterval(interval);
+      clearTimeout(safetyTimeout);
+    };
+  }, [isCamera, videoOn, cameraReady, userId, peerVideoRefs]);
+
+  useEffect(() => {
+    if (!isScreenShare || screenReady) return;
+
+    const el = peerVideoRefs?.current?.[userId]?.screen;
+    if (!el) return;
+
+    const interval = setInterval(() => {
+      const hasFrame = el.readyState >= 2 || el.currentTime > 0;
+      if (hasFrame) {
+        setScreenReady(true);
+        clearInterval(interval);
+      }
+    }, 250);
+
+    const safetyTimeout = setTimeout(() => {
+      if (el.srcObject) {
+        setScreenReady(true);
+      }
+      clearInterval(interval);
+    }, 2500);
+
+    return () => {
+      clearInterval(interval);
+      clearTimeout(safetyTimeout);
+    };
+  }, [isScreenShare, screenReady, userId, peerVideoRefs]);
+
+  // If user has left, don't render the video
+  if (status?.status === 'left' || !status) {
+    return null;
+  }
 
   // FIX: Safe access to peerVideoRefs
   const getVideoRefs = () => {
@@ -65,8 +129,6 @@ const ParticipantVideo = ({
   };
 
   if (isScreenShare) {
-    const videoRefs = getVideoRefs();
-    
     return (
       <div className="video-item screen-share-item">
         <div className="video-wrapper screen-share-video">
@@ -75,9 +137,10 @@ const ParticipantVideo = ({
               if (el) {
                 const refs = getVideoRefs();
                 refs.screen = el;
+                videoRef.current = el;
                 if (pendingRemoteStreams?.current?.[userId]?.screen) {
                   el.srcObject = pendingRemoteStreams.current[userId].screen;
-                  el.play().catch(() => { });
+                  el.play().then(() => setScreenReady(true)).catch(() => { });
                   pendingRemoteStreams.current[userId].screen = null;
                 }
               }
@@ -86,7 +149,13 @@ const ParticipantVideo = ({
             playsInline
             muted={isLocal}
             className="video-element screen-element"
+            onLoadedData={() => setScreenReady(true)}
+            onCanPlay={() => setScreenReady(true)}
+            onPlaying={() => setScreenReady(true)}
           />
+          {!screenReady && (
+            <div className="video-skeleton">Loading shared screen...</div>
+          )}
           <div className="video-overlay">
             <span className="video-name">
               {displayName} - Screen Share
@@ -111,6 +180,8 @@ const ParticipantVideo = ({
                 const refs = getVideoRefs();
                 if (refs.camera !== el) {
                   refs.camera = el;
+                  videoRef.current = el;
+                  setCameraReady(false);
                   logDebug(`Video element READY for ${shortId(userId)}`);
                   
                   // Check for pending streams
@@ -119,7 +190,7 @@ const ParticipantVideo = ({
                   
                   if (stream) {
                     el.srcObject = stream;
-                    el.play().catch(() => { });
+                    el.play().then(() => setCameraReady(true)).catch(() => { });
                     if (pendingRemoteStreams?.current?.[userId]) {
                       pendingRemoteStreams.current[userId].camera = null;
                     }
@@ -131,11 +202,17 @@ const ParticipantVideo = ({
             playsInline
             muted={isLocal}
             className="video-element"
+            onLoadedData={() => setCameraReady(true)}
+            onCanPlay={() => setCameraReady(true)}
+            onPlaying={() => setCameraReady(true)}
             style={{
               opacity: !isLocal && videoOn === false ? 0 : 1,
               transition: 'opacity 0.4s ease',
             }}
           />
+          {!isLocal && videoOn !== false && !cameraReady && (
+            <div className="video-skeleton">Loading video...</div>
+          )}
           {!isLocal && videoOn === false && (
             <div className="initials-avatar">
               <div className="initials-text">
