@@ -6,6 +6,8 @@ import CalendarSection from "./calendar/CalendarSection";
 import SidePanel from "./calendar/SidePanel";
 import "../styles/ScheduledMeetings.css";
 
+// const API_URL = "/proctormeet";
+
 const API_URL = "http://localhost:3000";
 
 function ScheduledMeetings() {

@@ -3,6 +3,8 @@ import { useNavigate } from 'react-router-dom';
 import axios from 'axios';
 import { AuthContext } from './AuthContext';
 
+// const API_URL = "http://localhost:3001" || "/proctormeet";
+
 const API_URL = "http://localhost:3000";
 
 const LoginPage = () => {
@@ -10,6 +12,10 @@ const LoginPage = () => {
   const [password, setPassword] = useState('');
   const [error, setError]       = useState('');
   const [loading, setLoading]   = useState(false);
+  const [showForgot, setShowForgot] = useState(false);
+  const [forgotEmail, setForgotEmail] = useState('');
+  const [forgotLoading, setForgotLoading] = useState(false);
+  const [forgotStatus, setForgotStatus] = useState({ type: '', message: '' });
   const { login } = useContext(AuthContext);
   const navigate  = useNavigate();
 
@@ -25,6 +31,35 @@ const LoginPage = () => {
       setError(err.response?.data?.error || 'Failed to log in');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleForgotPassword = async (e) => {
+    e.preventDefault();
+    const payloadEmail = (forgotEmail || email).trim().toLowerCase();
+    if (!payloadEmail) {
+      setForgotStatus({ type: 'error', message: 'Please enter your email address.' });
+      return;
+    }
+
+    setForgotLoading(true);
+    setForgotStatus({ type: '', message: '' });
+
+    try {
+      const response = await axios.post(`${API_URL}/api/forgot-password`, {
+        email: payloadEmail,
+      });
+      setForgotStatus({
+        type: 'success',
+        message: response.data?.message || 'If this email exists, a reset link has been sent.',
+      });
+    } catch (err) {
+      setForgotStatus({
+        type: 'error',
+        message: err.response?.data?.error || 'Failed to send reset link. Please try again.',
+      });
+    } finally {
+      setForgotLoading(false);
     }
   };
 
@@ -113,7 +148,17 @@ const LoginPage = () => {
               <label className="field">
                 <div className="label-row">
                   <span className="label">Password</span>
-                  <button type="button" className="link-btn">Forgot password?</button>
+                  <button
+                    type="button"
+                    className="link-btn"
+                    onClick={() => {
+                      setShowForgot((prev) => !prev);
+                      setForgotEmail((email || '').trim());
+                      setForgotStatus({ type: '', message: '' });
+                    }}
+                  >
+                    Forgot password?
+                  </button>
                 </div>
                 <input
                   className="input"
@@ -145,6 +190,29 @@ const LoginPage = () => {
                 </button>
               </div>
             </form>
+
+            {showForgot && (
+              <form className="forgot-box" onSubmit={handleForgotPassword}>
+                <div className="forgot-title">Reset your password</div>
+                <div className="forgot-sub">We will email you a secure reset link.</div>
+                <input
+                  className="input"
+                  type="email"
+                  value={forgotEmail}
+                  onChange={(e) => setForgotEmail(e.target.value)}
+                  placeholder="you@example.com"
+                  required
+                />
+                {forgotStatus.message && (
+                  <div className={`alert ${forgotStatus.type === 'error' ? 'error' : 'success'}`}>
+                    <div className="msg">{forgotStatus.message}</div>
+                  </div>
+                )}
+                <button className="btn secondary" type="submit" disabled={forgotLoading}>
+                  {forgotLoading ? 'Sending...' : 'Send reset link'}
+                </button>
+              </form>
+            )}
           </div>
 
         </section>
@@ -320,6 +388,20 @@ const LoginPage = () => {
           display: flex; align-items: center; gap: 12px; font-size: 13px;
         }
         .alert.error { border-color: rgba(255,80,80,0.2); color: #ff8080; background: rgba(255,80,80,0.07); }
+        .alert.success { border-color: rgba(0,204,105,0.2); color: #7cf2b2; background: rgba(0,204,105,0.08); }
+
+        .forgot-box {
+          margin-top: 12px;
+          border: 1px solid rgba(255,255,255,0.07);
+          background: rgba(255,255,255,0.02);
+          border-radius: 12px;
+          padding: 14px;
+          display: flex;
+          flex-direction: column;
+          gap: 10px;
+        }
+        .forgot-title { font-size: 14px; font-weight: 700; }
+        .forgot-sub { font-size: 12px; color: var(--muted); }
 
         /* Buttons */
         .actions { display: flex; flex-direction: column; gap: 10px; margin-top: 4px; }

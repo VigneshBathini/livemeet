@@ -7,6 +7,8 @@ import { AuthContext } from './AuthContext';
 import debounce from 'lodash/debounce';
 import '../styles/SchedulePage.css';
 
+// const API_URL = "/proctormeet";
+
 const API_URL = "http://localhost:3000";
 
 const SchedulePage = ({ onScheduleComplete = () => {}, onBack = () => {} }) => {
@@ -1287,6 +1289,12 @@ const handleEmailSelect = (email, name) => {
           gap: 12px;
           padding-top: 20px;
           border-top: 1px solid rgba(255, 255, 255, 0.1);
+          align-items: center;
+        }
+        
+        .form-actions .btn-ghost,
+        .form-actions .btn-primary {
+          min-width: 150px;
         }
         
         .btn-ghost {

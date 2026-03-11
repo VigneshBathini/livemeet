@@ -10,6 +10,7 @@ import { AuthContext } from './components/AuthContext';
 import SignupPage from './components/SignupPage';
 import ScheduledMeetings from './components/ScheduledMeetings';
 import LandingPage from './components/LandingPage';
+import ResetPasswordPage from './components/ResetPasswordPage';
 
 // Create a ModalWrapper component
 const ModalWrapper = ({ children }) => {
@@ -73,6 +74,7 @@ const App = () => {
             <Route path='/' element={<LandingPage />} />
             <Route path="/login" element={<LoginPage />} />
             <Route path="/signup" element={<SignupPage />} /> 
+            <Route path="/reset-password" element={<ResetPasswordPage />} />
             <Route
               path="/video"
               element={user ? <Video /> : <Navigate to="/login" replace />}

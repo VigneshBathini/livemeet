@@ -24,13 +24,14 @@ import LobbyPanel from './lobby/LobbyPanel';
 import ConferenceNotification from './notifications/ConferenceNotification';
 
 
+// const API_URL = "/proctormeet";
+// const SIGNALING_SERVER_URL = "https://proctormeet.globalsparkteksolutions.com";
 
 // const SIGNALING_SERVER_URL = 'https://livemeet-ribm.onrender.com';
 // const API_URL = "https://livemeet-ribm.onrender.com";
 
 const SIGNALING_SERVER_URL = 'http://localhost:3000';
 const API_URL = "http://localhost:3000";
-
 
 
 class ErrorBoundary extends React.Component {
@@ -101,6 +102,8 @@ const Video = ({
   const [totalVideoPages, setTotalVideoPages] = useState(1);
   const [socketSessionKey, setSocketSessionKey] = useState(0);
   const [conferenceNotification, setConferenceNotification] = useState(null);
+  const [hostPermitQueue, setHostPermitQueue] = useState([]);
+  const [activeHostPermitRequest, setActiveHostPermitRequest] = useState(null);
 
   // Add these new states near your other useState declarations
   // New: All non-host users wait (except if already validated as host)
@@ -109,6 +112,8 @@ const Video = ({
   const [showSidePanel, setShowSidePanel] = useState(false);
   const [sidePanelType, setSidePanelType] = useState('chat'); // 'chat' or 'lobby'
   const [unreadChatCount, setUnreadChatCount] = useState(0);
+  const [connectionState, setConnectionState] = useState('connecting');
+  const [networkQuality, setNetworkQuality] = useState({ level: 'unknown', label: 'Network: --' });
 
   const isAnyScreenSharing = isScreenSharing ||
     Object.values(connectionStatus).some(status => status?.streams?.screen === true);
@@ -148,6 +153,7 @@ const Video = ({
   const joinRequestSentRef = useRef(false);
   const showSidePanelRef = useRef(showSidePanel);
   const sidePanelTypeRef = useRef(sidePanelType);
+  const previousWaitingUsersRef = useRef([]);
 
 
   // const [currentVideoPage, setCurrentVideoPage] = useState(1);
@@ -201,6 +207,50 @@ const Video = ({
     showSidePanelRef.current = showSidePanel;
     sidePanelTypeRef.current = sidePanelType;
   }, [showSidePanel, sidePanelType]);
+
+  useEffect(() => {
+    // Host-only Teams-like admit popup for newly arrived waiting users.
+    if (!isHost || !inRoom) {
+      previousWaitingUsersRef.current = waitingUsers;
+      setHostPermitQueue([]);
+      setActiveHostPermitRequest(null);
+      return;
+    }
+
+    const prevIds = new Set((previousWaitingUsersRef.current || []).map((u) => u.id));
+    const newcomers = (waitingUsers || []).filter((u) => !prevIds.has(u.id));
+    previousWaitingUsersRef.current = waitingUsers;
+
+    if (newcomers.length > 0) {
+      setHostPermitQueue((prev) => {
+        const existing = new Set(prev.map((u) => u.id));
+        const merged = [...prev];
+        newcomers.forEach((u) => {
+          if (!existing.has(u.id) && activeHostPermitRequest?.id !== u.id) {
+            merged.push(u);
+          }
+        });
+        return merged;
+      });
+    }
+  }, [waitingUsers, isHost, inRoom, activeHostPermitRequest]);
+
+  useEffect(() => {
+    if (!isHost || !inRoom) return;
+    if (activeHostPermitRequest) return;
+    if (hostPermitQueue.length === 0) return;
+
+    setActiveHostPermitRequest(hostPermitQueue[0]);
+    setHostPermitQueue((prev) => prev.slice(1));
+  }, [hostPermitQueue, activeHostPermitRequest, isHost, inRoom]);
+
+  useEffect(() => {
+    if (!activeHostPermitRequest) return;
+    const stillWaiting = waitingUsers.some((u) => u.id === activeHostPermitRequest.id);
+    if (!stillWaiting) {
+      setActiveHostPermitRequest(null);
+    }
+  }, [waitingUsers, activeHostPermitRequest]);
 
   const requestHostApproval = useCallback(() => {
     if (!socketRef.current?.connected || !roomId || !userName || !email || isHostRef.current) return;
@@ -365,6 +415,58 @@ const Video = ({
   }, []);
 
   const shortId = (id) => id.slice(0, 8);
+
+  const updateNetworkQuality = useCallback(() => {
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+      setNetworkQuality({ level: 'offline', label: 'Network: Offline' });
+      return;
+    }
+
+    const connection = navigator?.connection || navigator?.mozConnection || navigator?.webkitConnection;
+    if (!connection) {
+      setNetworkQuality({ level: 'unknown', label: 'Network: Online' });
+      return;
+    }
+
+    const { effectiveType, downlink, rtt } = connection;
+    let level = 'good';
+    if (effectiveType === 'slow-2g' || effectiveType === '2g' || (downlink && downlink < 0.7) || (rtt && rtt > 300)) {
+      level = 'poor';
+    } else if (effectiveType === '3g' || (downlink && downlink < 1.5) || (rtt && rtt > 200)) {
+      level = 'ok';
+    }
+
+    const label = effectiveType ? `Network: ${effectiveType.toUpperCase()}` : `Network: ${level}`;
+    setNetworkQuality({ level, label });
+  }, []);
+
+  const manualReconnect = useCallback(() => {
+    if (!socketRef.current || socketRef.current.connected) return;
+    setConnectionState('reconnecting');
+    socketRef.current.connect();
+  }, []);
+
+  useEffect(() => {
+    updateNetworkQuality();
+
+    const handleOnline = () => updateNetworkQuality();
+    const handleOffline = () => updateNetworkQuality();
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+
+    const connection = navigator?.connection || navigator?.mozConnection || navigator?.webkitConnection;
+    if (connection?.addEventListener) {
+      connection.addEventListener('change', updateNetworkQuality);
+    }
+
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+      if (connection?.removeEventListener) {
+        connection.removeEventListener('change', updateNetworkQuality);
+      }
+    };
+  }, [updateNetworkQuality]);
 
 
 
@@ -604,7 +706,7 @@ useEffect(() => {
   useEffect(() => {
     console.log('5 :handleVisibilityChange')
     const handleVisibilityChange = () => {
-      if (document.hidden && participantControls[socketRef.current?.id]?.proctor) {
+      if (document.hidden && participantControls[socketRef.current?.id]?.proctor && !isScreenSharing) {
         const now = Date.now();
         if (now - lastTabSwitch.current > 1000) {
           lastTabSwitch.current = now;
@@ -730,18 +832,20 @@ useEffect(() => {
   window.socketConnecting = true;
 
   socketRef.current = io(SIGNALING_SERVER_URL, {
-    transports: ['websocket', 'polling'],
-    reconnection: true,
-    reconnectionAttempts: Infinity,
-    reconnectionDelay: 1000,
-    reconnectionDelayMax: 5000,
-    randomizationFactor: 0.5,
-    autoConnect: false // Don't connect immediately
-  });
+     path: "/socket.io",
+     transports: ["websocket","polling"],
+     reconnection: true,
+     reconnectionAttempts: Infinity,
+     reconnectionDelay: 1000,
+     reconnectionDelayMax: 5000,
+     randomizationFactor: 0.5,
+     autoConnect: false // Don't connect immediately
+   });
 
   socketRef.current.on('connect', () => {
     console.log('✅ Connected to signaling server');
     window.socketConnecting = false;
+    setConnectionState('connected');
     addAlert('Connected to server', 'success');
 
     // Host should always refresh waiting list on initial connect/reconnect.
@@ -917,12 +1021,27 @@ useEffect(() => {
   socketRef.current.on('connect_error', (err) => {
     console.error(`Socket connection error: ${err.message}`);
     window.socketConnecting = false;
+    setConnectionState(navigator?.onLine === false ? 'offline' : 'error');
     addAlert('Connection error. Retrying...', 'error');
   });
+
+  socketRef.current.on('disconnect', (reason) => {
+    console.warn(`Socket disconnected: ${reason || 'unknown'}`);
+    setConnectionState(navigator?.onLine === false ? 'offline' : 'disconnected');
+    addAlert('Connection lost. Reconnecting...', 'warning');
+  });
+
+  if (socketRef.current.io?.on) {
+    socketRef.current.io.on('reconnect_attempt', (attempt) => {
+      console.log(`Reconnecting attempt ${attempt}`);
+      setConnectionState('reconnecting');
+    });
+  }
 
   socketRef.current.on('reconnect', (attempt) => {
     console.log(`✅ Reconnected after attempt ${attempt}`);
     window.socketConnecting = false;
+    setConnectionState('connected');
     addAlert(`Reconnected to server after ${attempt} attempts.`, 'success');
     
     if (
@@ -948,6 +1067,7 @@ useEffect(() => {
   socketRef.current.on('reconnect_failed', () => {
     console.log('Reconnection failed. Retrying manually...');
     window.socketConnecting = false;
+    setConnectionState('failed');
     addAlert('Reconnection failed. Retrying...', 'error');
     socketRef.current.connect();
   });
@@ -1488,6 +1608,23 @@ const joinRoomLogic = async () => {
     denyUser(tempId);
     const user = waitingUsers.find(u => u.id === tempId);
     showConferenceNotification(`${user?.name || 'User'} denied access`, 'error');
+  };
+
+  const handleActivePermitApprove = () => {
+    if (!activeHostPermitRequest) return;
+    handleApproveUser(activeHostPermitRequest.id);
+    setActiveHostPermitRequest(null);
+  };
+
+  const handleActivePermitDeny = () => {
+    if (!activeHostPermitRequest) return;
+    handleDenyUser(activeHostPermitRequest.id);
+    setActiveHostPermitRequest(null);
+  };
+
+  const handleActivePermitLater = () => {
+    if (!activeHostPermitRequest) return;
+    setActiveHostPermitRequest(null);
   };
 
 
@@ -2919,6 +3056,33 @@ const cleanupAllPeers = useCallback(() => {
     // }
   };
 
+  const connectionBannerCopy = {
+    connecting: {
+      title: 'Connecting to the meeting…',
+      subtitle: 'Setting up your audio/video connection.'
+    },
+    reconnecting: {
+      title: 'Reconnecting…',
+      subtitle: 'Network is unstable. Audio/video may pause temporarily.'
+    },
+    disconnected: {
+      title: 'Connection lost',
+      subtitle: 'We are retrying. If audio/video stays off, toggle mic/camera or reload.'
+    },
+    offline: {
+      title: 'You are offline',
+      subtitle: 'Check your internet connection to restore audio/video.'
+    },
+    failed: {
+      title: 'Reconnect failed',
+      subtitle: 'Please retry or reload the page to recover audio/video.'
+    },
+    error: {
+      title: 'Connection error',
+      subtitle: 'We are retrying. You can also retry manually.'
+    }
+  };
+  const bannerCopy = connectionBannerCopy[connectionState];
 
   return (
     <ErrorBoundary>
@@ -2963,12 +3127,27 @@ const cleanupAllPeers = useCallback(() => {
               />
             )}
 
+            {isHost && activeHostPermitRequest && (
+              <div className="host-permit-popup" role="dialog" aria-label="Participant waiting for approval">
+                <div className="host-permit-popup-title">Someone wants to join</div>
+                <div className="host-permit-popup-name">{activeHostPermitRequest.name || 'Participant'}</div>
+                <div className="host-permit-popup-email">{activeHostPermitRequest.email || ''}</div>
+                <div className="host-permit-popup-actions">
+                  <button className="host-permit-btn admit" onClick={handleActivePermitApprove}>Admit</button>
+                  <button className="host-permit-btn deny" onClick={handleActivePermitDeny}>Deny</button>
+                  <button className="host-permit-btn later" onClick={handleActivePermitLater}>Later</button>
+                </div>
+              </div>
+            )}
+
             <MeetingHeader
               roomId={roomId}
               isHost={isHost}
               peers={peers}
               waitingUsers={waitingUsers}
               unreadChatCount={unreadChatCount}
+              connectionState={connectionState}
+              networkQuality={networkQuality}
               showSidePanel={showSidePanel}
               sidePanelType={sidePanelType}
               toggleSidePanel={toggleSidePanel}
@@ -2976,6 +3155,19 @@ const cleanupAllPeers = useCallback(() => {
               isExternal={isExternal}
               leaveRoom={leaveRoom}
             />
+
+            {bannerCopy && (
+              <div className={`connection-banner ${connectionState}`} role="status" aria-live="polite">
+                <div className="connection-banner-text">
+                  <div className="connection-banner-title">{bannerCopy.title}</div>
+                  <div className="connection-banner-subtitle">{bannerCopy.subtitle}</div>
+                </div>
+                <div className="connection-banner-actions">
+                  <button onClick={manualReconnect}>Retry now</button>
+                  <button onClick={() => window.location.reload()}>Reload</button>
+                </div>
+              </div>
+            )}
 
             <div className="main-content">
               <div className="video-container">
@@ -3081,17 +3273,6 @@ const cleanupAllPeers = useCallback(() => {
   position: relative;
 }
 
-/* Fix for the Lobby Panel User Row */
-.chat-message {
-  display: flex !important;
-  justify-content: space-between;
-  align-items: center;
-  width: 100%;
-  max-width: 100% !important; /* Overriding your 90% own-message rule */
-  background: #24244a;
-  border: 1px solid rgba(255, 255, 255, 0.05);
-}
-
 /* Fix for initials icon compression */
 .initials-avatar-lobby {
   width: 36px;
@@ -3133,6 +3314,76 @@ const cleanupAllPeers = useCallback(() => {
   display: flex;
   align-items: center;
   justify-content: center;
+}
+
+.host-permit-popup {
+  position: fixed;
+  bottom: 18px;
+  right: 18px;
+  width: min(360px, calc(100vw - 36px));
+  background: rgba(18, 20, 35, 0.97);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 12px;
+  padding: 14px;
+  z-index: 1400;
+  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.4);
+  animation: slideInHostPermit 0.18s ease-out;
+}
+
+.host-permit-popup-title {
+  font-size: 12px;
+  color: #9fa9d8;
+  margin-bottom: 6px;
+}
+
+.host-permit-popup-name {
+  font-size: 16px;
+  font-weight: 700;
+  color: #ffffff;
+}
+
+.host-permit-popup-email {
+  font-size: 12px;
+  color: #bec7ef;
+  margin-top: 2px;
+  margin-bottom: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.host-permit-popup-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.host-permit-btn {
+  border: none;
+  border-radius: 8px;
+  height: 34px;
+  padding: 0 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.host-permit-btn.admit {
+  background: #16a34a;
+  color: #fff;
+}
+
+.host-permit-btn.deny {
+  background: #dc2626;
+  color: #fff;
+}
+
+.host-permit-btn.later {
+  background: #323a57;
+  color: #d9def5;
+}
+
+@keyframes slideInHostPermit {
+  from { opacity: 0; transform: translateY(-8px); }
+  to { opacity: 1; transform: translateY(0); }
 }
 
 .side-panel {
@@ -3465,20 +3716,20 @@ const cleanupAllPeers = useCallback(() => {
   }
 
   .chat-messages-wrapper {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  min-height: 0; /* Important for flexbox scrolling */
-  margin-bottom: 12px;
-  overflow: hidden; /* Contain the scrolling */
-}
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    min-height: 0; /* Important for flexbox scrolling */
+    margin-bottom: 12px;
+    overflow: hidden; /* Contain the scrolling */
+  }
   .chat-container {
     flex: 1;
     display: flex;
     flex-direction: column;
-      height: 100%; /* Add this */
+    height: 100%;
     padding: 12px;
-      min-height: 0; 
+    min-height: 0;
   }
 
   .chat-header {
@@ -3508,55 +3759,73 @@ const cleanupAllPeers = useCallback(() => {
 
   .chat-header button:hover { opacity: 1; }
 
- .chat-messages {
-  flex: 1;
-  overflow-y: auto;
-  padding: 8px;
-  background: #1c1c38;
-  border-radius: 6px;
-  /* Hide scrollbar for Chrome, Safari and Opera */
-  scrollbar-width: none; /* Firefox */
-  -ms-overflow-style: none; /* IE and Edge */
-}
+  .chat-messages {
+    flex: 1;
+    overflow-y: auto;
+    padding: 10px;
+    background: #15172f;
+    border-radius: 8px;
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    scrollbar-width: none; /* Firefox */
+    -ms-overflow-style: none; /* IE and Edge */
+  }
 
-  
- .chat-message {
-  margin-bottom: 8px;
-  padding: 8px;
-  border-radius: 6px;
-  background: #24244a;
-  max-width: 90%;
-  font-size: 12px;
-  word-wrap: break-word;
-}
+  .chat-message {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 4px;
+    margin-bottom: 10px;
+    padding: 10px 12px;
+    border-radius: 10px;
+    background: #232846;
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    max-width: 92%;
+    font-size: 12px;
+  }
+
   .chat-message.own-message {
-  background: var(--accent-blue);
-  margin-left: auto;
-}
+    background: #2b7bff;
+    border-color: rgba(43, 123, 255, 0.45);
+    color: #ffffff;
+    margin-left: auto;
+  }
 
   .chat-meta {
-  display: flex;
-  gap: 4px;
-  align-items: baseline;
-  margin-bottom: 2px;
-}
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+    align-items: baseline;
+  }
 
   .chat-sender {
-    font-weight: 500;
-    color: var(--accent-purple);
+    font-weight: 600;
+    color: #b6c2ff;
     font-size: 11px;
+    letter-spacing: 0.2px;
+  }
+
+  .chat-message.own-message .chat-sender {
+    color: #e8f1ff;
   }
 
   .chat-time {
-    color: #a0a0c0;
+    color: #9aa4c5;
     font-size: 10px;
+    white-space: nowrap;
   }
 
- .chat-text {
-  font-size: 12px;
-  word-wrap: break-word;
-  line-height: 1.3;
-}
+  .chat-message.own-message .chat-time {
+    color: #dbe7ff;
+  }
+
+  .chat-text {
+    font-size: 12px;
+    line-height: 1.4;
+    white-space: pre-wrap;
+    word-break: break-word;
+    overflow-wrap: anywhere;
+  }
 
 .chat-input {
   display: flex;
@@ -3566,11 +3835,11 @@ const cleanupAllPeers = useCallback(() => {
 
 .chat-input input {
   flex: 1;
-  padding: 8px;
+  padding: 9px 10px;
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: 8px;
   font-size: 12px;
-  background: #24244a;
+  background: #1f2342;
   color: var(--text-color);
 }
   .chat-input input:focus {
@@ -3681,6 +3950,77 @@ const cleanupAllPeers = useCallback(() => {
   .meeting-info span {
     font-size: 12px;
     color: #a0a0c0;
+  }
+
+  .status-pills {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    flex-wrap: wrap;
+  }
+
+  .status-pill {
+    padding: 6px 10px;
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.2px;
+    border: 1px solid var(--border);
+    background: rgba(255, 255, 255, 0.04);
+    color: var(--text-color);
+  }
+
+  .status-pill.connected { border-color: #16a34a; color: #d1fae5; background: rgba(22, 163, 74, 0.15); }
+  .status-pill.connecting { border-color: #f59e0b; color: #fde68a; background: rgba(245, 158, 11, 0.15); }
+  .status-pill.reconnecting { border-color: #f59e0b; color: #fde68a; background: rgba(245, 158, 11, 0.15); }
+  .status-pill.disconnected { border-color: #ef4444; color: #fecaca; background: rgba(239, 68, 68, 0.15); }
+  .status-pill.offline { border-color: #ef4444; color: #fecaca; background: rgba(239, 68, 68, 0.15); }
+  .status-pill.failed { border-color: #ef4444; color: #fecaca; background: rgba(239, 68, 68, 0.15); }
+  .status-pill.error { border-color: #ef4444; color: #fecaca; background: rgba(239, 68, 68, 0.15); }
+  .status-pill.good { border-color: #16a34a; color: #d1fae5; background: rgba(22, 163, 74, 0.12); }
+  .status-pill.ok { border-color: #f59e0b; color: #fde68a; background: rgba(245, 158, 11, 0.12); }
+  .status-pill.poor { border-color: #ef4444; color: #fecaca; background: rgba(239, 68, 68, 0.12); }
+  .status-pill.unknown { border-color: #64748b; color: #e2e8f0; background: rgba(100, 116, 139, 0.12); }
+
+  .connection-banner {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 16px;
+    background: rgba(20, 22, 43, 0.96);
+    border-bottom: 1px solid var(--border);
+  }
+
+  .connection-banner-title {
+    font-size: 13px;
+    font-weight: 600;
+    color: #ffffff;
+  }
+
+  .connection-banner-subtitle {
+    font-size: 11px;
+    color: #a0a0c0;
+    margin-top: 2px;
+  }
+
+  .connection-banner-actions {
+    display: flex;
+    gap: 8px;
+  }
+
+  .connection-banner-actions button {
+    padding: 6px 10px;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    background: #232846;
+    color: var(--text-color);
+    font-size: 11px;
+    cursor: pointer;
+  }
+
+  .connection-banner-actions button:hover {
+    background: #2f3560;
   }
 
   .top-controls {

@@ -3,7 +3,7 @@ const path = require('path');
 const { io } = require('socket.io-client');
 
 const roomId = `room-test-${Date.now()}`;
-const url = 'http://localhost:3000';
+const url = 'http://localhost:3090';
 
 function waitForEvent(socket, event, timeoutMs = 10000) {
   return new Promise((resolve, reject) => {

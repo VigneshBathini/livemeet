@@ -11,6 +11,41 @@ const approvedSocketIds = {}; // Approved pending users without reliable email: 
 const userMediaState = {};  // { socketId: { videoOn, audioOn, userName } }
 const roomChatHistory = {}; // In-memory fallback history per active room
 
+let chatColumnsCache = null;
+
+const loadChatColumns = async () => {
+  if (chatColumnsCache) return chatColumnsCache;
+  try {
+    const [rows] = await pool.execute('SHOW COLUMNS FROM pmx_chat_messages');
+    chatColumnsCache = new Set(rows.map((row) => row.Field));
+    return chatColumnsCache;
+  } catch (err) {
+    console.error(`Error loading chat message columns: ${err.message}`);
+    chatColumnsCache = new Set();
+    return chatColumnsCache;
+  }
+};
+
+const resolveChatHistoryQuery = async () => {
+  const columns = await loadChatColumns();
+  const timeCandidates = ['created_at', 'createdAt', 'sent_at', 'timestamp'];
+  const timeColumn = timeCandidates.find((col) => columns.has(col)) || null;
+  const orderColumn = timeColumn || (columns.has('id') ? 'id' : null);
+
+  const selectParts = ['sender_name', 'message'];
+  if (timeColumn) {
+    selectParts.push(`${timeColumn} AS created_at`);
+  }
+
+  const orderClause = orderColumn ? `ORDER BY ${orderColumn} ASC` : '';
+
+  return {
+    selectClause: selectParts.join(', '),
+    orderClause,
+    hasTime: Boolean(timeColumn),
+  };
+};
+
 const setupSocketHandlers = (io) => {
   io.on('connection', (socket) => {
     console.log(`User connected: ${socket.id}`);
@@ -20,22 +55,26 @@ const setupSocketHandlers = (io) => {
       let dbHistory = [];
 
       try {
+        const { selectClause, orderClause, hasTime } = await resolveChatHistoryQuery();
         const [historyRows] = await pool.execute(
-          `SELECT sender_name, message, created_at
+          `SELECT ${selectClause}
            FROM pmx_chat_messages
            WHERE room_id = ?
-           ORDER BY created_at ASC
+           ${orderClause}
            LIMIT 200`,
           [roomId],
         );
 
-        dbHistory = historyRows.map((row) => ({
-          from: 'history',
-          userName: row.sender_name || 'Unknown',
-          message: row.message || '',
-          time: row.created_at ? new Date(row.created_at).toLocaleTimeString() : '',
-          createdAt: row.created_at || null,
-        }));
+        dbHistory = historyRows.map((row) => {
+          const createdAt = row.created_at || null;
+          return {
+            from: 'history',
+            userName: row.sender_name || 'Unknown',
+            message: row.message || '',
+            time: createdAt ? new Date(createdAt).toLocaleTimeString() : (hasTime ? '' : ''),
+            createdAt,
+          };
+        });
       } catch (err) {
         console.error(`Error loading chat history for room ${roomId}: ${err.message}`);
       }
@@ -73,7 +112,7 @@ const setupSocketHandlers = (io) => {
         approvedSocketIds[roomId].delete(socket.id);
       }
 
-      // 🔥 FIRST: Check if this is an instant meeting creator
+      // FIRST: Check if this is an instant meeting creator
       try {
         const [instantRows] = await pool.execute(
           'SELECT creator_email FROM pmx_instant_meeting WHERE room_id = ?',
@@ -84,7 +123,7 @@ const setupSocketHandlers = (io) => {
           const creatorEmail = instantRows[0].creator_email;
 
           if (email === creatorEmail) {
-            console.log(`🎯 [INSTANT CREATOR DETECTED] ${userName} is creator, NOT adding to waiting list`);
+            console.log(`[INSTANT CREATOR DETECTED] ${userName} is creator, NOT adding to waiting list`);
 
             // Send special event to frontend to join directly
             socket.emit('host-verified', {

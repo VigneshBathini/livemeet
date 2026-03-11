@@ -18,18 +18,78 @@ const LandingPage = () => {
   };
 
   const features = [
-    { icon: '🎯', title: 'AI Proctoring',        desc: 'Detect cheating, multiple faces, and tab switching in real-time during every interview.' },
-    { icon: '⚡', title: 'One-Click Join',        desc: 'No downloads for candidates. Works on any browser, any device, instantly.' },
-    { icon: '📊', title: 'Smart Analytics',       desc: 'Talking time ratios, engagement scores, and structured scorecards — ready when the call ends.' },
-    { icon: '🤝', title: 'Panel Interviews',      desc: 'Invite multiple interviewers, share live notes, and collect structured feedback together.' },
-    { icon: '🔒', title: 'Enterprise Security',   desc: 'End-to-end encryption, GDPR compliant, SSO ready out of the box.' },
-    { icon: '🔄', title: 'ATS Integration',       desc: 'Syncs natively with Greenhouse, Lever, and Workday. Your pipeline, uninterrupted.' },
+    {
+      icon: (
+        <svg viewBox="0 0 24 24" className="feat-icon-svg" role="img" aria-label="AI Proctoring icon">
+          <circle cx="12" cy="12" r="8" fill="none" stroke="currentColor" strokeWidth="1.8" />
+          <circle cx="12" cy="12" r="2.6" fill="currentColor" />
+          <path d="M12 4v-2M12 22v-2M4 12H2M22 12h-2" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+        </svg>
+      ),
+      title: 'AI Proctoring',
+      desc: 'Detect cheating, multiple faces, and tab switching in real-time during every interview.'
+    },
+    {
+      icon: (
+        <svg viewBox="0 0 24 24" className="feat-icon-svg" role="img" aria-label="One-Click Join icon">
+          <path d="M13 2L4 14h6l-1 8 9-12h-6l1-8z" fill="currentColor" />
+        </svg>
+      ),
+      title: 'One-Click Join',
+      desc: 'No downloads for candidates. Works on any browser, any device, instantly.'
+    },
+    {
+      icon: (
+        <svg viewBox="0 0 24 24" className="feat-icon-svg" role="img" aria-label="Smart Analytics icon">
+          <path d="M4 19h16" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+          <rect x="6" y="10" width="3" height="7" rx="1" fill="currentColor" />
+          <rect x="11" y="6" width="3" height="11" rx="1" fill="currentColor" opacity="0.85" />
+          <rect x="16" y="8" width="3" height="9" rx="1" fill="currentColor" opacity="0.7" />
+        </svg>
+      ),
+      title: 'Smart Analytics',
+      desc: 'Coming soon: Talking time ratios, engagement scores, and structured scorecards — ready when the call ends.'
+    },
+    {
+      icon: (
+        <svg viewBox="0 0 24 24" className="feat-icon-svg" role="img" aria-label="Panel Interviews icon">
+          <circle cx="9" cy="10" r="3" fill="currentColor" />
+          <circle cx="16" cy="11" r="2.5" fill="currentColor" opacity="0.8" />
+          <path d="M4 19c1.5-3 8.5-3 10 0" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" fill="none" />
+          <path d="M13 18c1-2 5-2 6 0" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" fill="none" />
+        </svg>
+      ),
+      title: 'Panel Interviews',
+      desc: 'Invite multiple interviewers, share live notes, and collect structured feedback together.'
+    },
+    {
+      icon: (
+        <svg viewBox="0 0 24 24" className="feat-icon-svg" role="img" aria-label="Enterprise Security icon">
+          <path d="M12 3l7 3v5c0 5-3.5 8-7 9-3.5-1-7-4-7-9V6l7-3z" fill="none" stroke="currentColor" strokeWidth="1.8" />
+          <path d="M9 12l2 2 4-4" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+      ),
+      title: 'Enterprise Security',
+      desc: 'End-to-end encryption, GDPR compliant, SSO ready out of the box.'
+    },
+    {
+      icon: (
+        <svg viewBox="0 0 24 24" className="feat-icon-svg" role="img" aria-label="ATS Integration icon">
+          <path d="M8.5 12a3.5 3.5 0 013.5-3.5h3" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" fill="none" />
+          <path d="M15.5 12a3.5 3.5 0 01-3.5 3.5H9" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" fill="none" />
+          <circle cx="6.5" cy="12" r="2.5" fill="none" stroke="currentColor" strokeWidth="1.8" />
+          <circle cx="17.5" cy="12" r="2.5" fill="none" stroke="currentColor" strokeWidth="1.8" />
+        </svg>
+      ),
+      title: 'ATS Integration',
+      desc: 'Syncs natively with Greenhouse, Lever, and Workday. Your pipeline, uninterrupted.'
+    },
   ];
 
   const steps = [
     { n: '01', title: 'Schedule',        desc: 'Pick a time and add the candidate email. Calendar sync auto-creates a private meeting room.' },
     { n: '02', title: 'Candidate Joins', desc: 'One link, any browser, any device. AI verifies identity and monitors the session live.' },
-    { n: '03', title: 'Evaluate',        desc: 'Built-in scorecards, collaborative notes, and instant analytics land in your inbox.' },
+    { n: '03', title: 'Evaluate',        desc: 'Coming soon: Built-in scorecards, collaborative notes, and instant analytics land in your inbox.' },
   ];
 
   const testimonials = [
@@ -41,12 +101,12 @@ const LandingPage = () => {
   const plans = [
     {
       name: 'Free Trial', price: '$0',   period: 'forever',
-      features: ['10 interviews / month', 'Basic proctoring', '40-min limit', 'Up to 10 participants'],
+      features: ['10 interviews / month', 'Basic proctoring', '30-min limit', 'Up to 3 participants-proctor mode'],
       cta: 'Start Free', primary: false,
     },
     {
       name: 'Professional', price: '$29', period: 'per user / month',
-      features: ['Unlimited interviews', 'Full AI proctoring', 'Recording & transcription', 'Up to 50 participants', 'Custom branding'],
+      features: ['Unlimited interviews', 'Full AI proctoring', 'Up to 5 participants proctor mode', 'Custom branding'],
       cta: 'Start Free Trial', primary: true,
     },
     {
@@ -86,11 +146,11 @@ const LandingPage = () => {
         </div>
       </header>
 
-      {/* ── HERO ── */}
+  
       <section className="section hero-section">
         <div className="container hero-container">
 
-          {/* Text side */}
+      
           <div className="hero-left">
             <div className="badge-pill">
               <span className="badge-dot" />
@@ -141,7 +201,7 @@ const LandingPage = () => {
             </div>
           </div>
 
-          {/* Mock UI side */}
+      
           <div className="hero-right">
             <div className="mock-ui">
               <div className="mock-bar">
@@ -183,7 +243,7 @@ const LandingPage = () => {
         </div>
       </section>
 
-      {/* ── LOGO BAR ── */}
+     
       <div className="logo-bar">
         <div className="container">
           <p className="logo-bar-label">Trusted by innovative teams</p>
@@ -195,7 +255,7 @@ const LandingPage = () => {
         </div>
       </div>
 
-      {/* ── FEATURES ── */}
+   
       <section id="features" className="section">
         <div className="container">
           <div className="section-head">
@@ -215,7 +275,6 @@ const LandingPage = () => {
         </div>
       </section>
 
-      {/* ── HOW IT WORKS ── */}
       <section id="how-it-works" className="section tinted">
         <div className="container">
           <div className="section-head">
@@ -238,7 +297,6 @@ const LandingPage = () => {
         </div>
       </section>
 
-      {/* ── TESTIMONIALS ── */}
       <section className="section">
         <div className="container">
           <div className="section-head">
@@ -263,7 +321,7 @@ const LandingPage = () => {
         </div>
       </section>
 
-      {/* ── PRICING ── */}
+   
       <section id="pricing" className="section tinted">
         <div className="container">
           <div className="section-head">
@@ -615,7 +673,15 @@ const LandingPage = () => {
         .grid-3 { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px; }
         .feature-card { display: flex; flex-direction: column; gap: 12px; transition: border-color 0.2s; }
         .feature-card:hover { border-color: rgba(78,167,255,0.25); }
-        .feat-icon { font-size: 32px; }
+        .feat-icon {
+          width: 44px; height: 44px; border-radius: 12px;
+          display: flex; align-items: center; justify-content: center;
+          background: rgba(255,255,255,0.04);
+          border: 1px solid rgba(255,255,255,0.08);
+          box-shadow: 0 12px 24px rgba(2,6,23,0.35);
+          color: var(--accent-a);
+        }
+        .feat-icon-svg { width: 24px; height: 24px; display: block; }
         .feat-title { font-size: 16px; font-weight: 700; color: var(--text); }
         .feat-desc { font-size: 13.5px; color: var(--muted); line-height: 1.65; }
 

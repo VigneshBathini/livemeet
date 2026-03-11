@@ -242,7 +242,8 @@
 }
 
 .form-row input:invalid {
-    border-color: var(--error);
+    border-color: var(--accent-blue);
+    box-shadow: 0 0 0 1px rgba(0, 183, 235, 0.25);
 }
 
 .time-note {
@@ -342,6 +343,12 @@
     gap: 12px;
     margin-top: 24px;
     justify-content: flex-end;
+    align-items: center;
+}
+
+.form-actions .btn-ghost,
+.form-actions .btn-primary {
+    min-width: 150px;
 }
 
 .btn-ghost {

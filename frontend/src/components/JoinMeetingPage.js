@@ -3,7 +3,9 @@ import { useParams, useLocation } from 'react-router-dom';
 import axios from 'axios';
 import Video from './Video';
 
-const API_URL = process.env.API_URL || "http://localhost:3000";
+// const API_URL = "/proctormeet";
+
+const API_URL = "http://localhost:3000";
 
 const JoinMeetingPage = ({
   addAlert = (msg, type) => console.log(`${type}: ${msg}`),

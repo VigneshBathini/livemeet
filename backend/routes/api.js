@@ -1,6 +1,7 @@
 const express = require('express');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
+const crypto = require('crypto');
 const { v4: uuidV4 } = require('uuid');
 const { pool } = require('../config/database');
 const { sendEmail } = require('../utils/email');
@@ -10,7 +11,7 @@ const { stat } = require('fs');
 
 const router = express.Router();
 
-const JWT_SECRET = process.env.JWT_SECRET || 'your_jwt_secret_key_here'; 
+const JWT_SECRET = process.env.JWT_SECRET || 'your_jwt_secret_key_here';
 
 router.get('/test', (req, res) => {
   res.status(200).send('Server is running');
@@ -69,7 +70,7 @@ router.post('/login', async (req, res) => {
 
   try {
     const [users] = await pool.execute('SELECT * FROM pmx_users WHERE email = ?', [email]);
-    console.log('login',users.length);
+    console.log('login', users.length);
     if (users.length === 0) {
       return res.status(401).json({ error: 'Invalid credentials' });
     }
@@ -88,6 +89,113 @@ router.post('/login', async (req, res) => {
   }
 });
 
+router.post('/forgot-password', async (req, res) => {
+  const normalizedEmail = (req.body?.email || '').trim().toLowerCase();
+  if (!normalizedEmail) {
+    return res.status(400).json({ error: 'Email is required' });
+  }
+
+  try {
+    const [users] = await pool.execute(
+      'SELECT id, name, email FROM pmx_users WHERE email = ? LIMIT 1',
+      [normalizedEmail]
+    );
+
+    // Avoid user enumeration: return success even if user doesn't exist.
+    if (users.length === 0) {
+      return res.json({ message: 'If this email exists, a reset link has been sent.' });
+    }
+
+    const user = users[0];
+    const resetToken = crypto.randomBytes(32).toString('hex');
+    const resetTokenHash = crypto.createHash('sha256').update(resetToken).digest('hex');
+    const resetExpires = new Date(Date.now() + 15 * 60 * 1000); // 15 minutes
+
+    await pool.execute(
+      'UPDATE pmx_users SET reset_password_token = ?, reset_password_expires = ? WHERE id = ?',
+      [resetTokenHash, resetExpires, user.id]
+    );
+
+    const baseUrl = 'http://localhost:3000';
+    const resetUrl = `${baseUrl}/reset-password?token=${resetToken}&email=${encodeURIComponent(user.email)}`;
+
+    await sendEmail({
+      to: user.email,
+      subject: 'Reset your ProctorMeet password',
+      html: `
+        <div style="font-family:Arial,sans-serif;line-height:1.5;color:#1f2937">
+          <h2 style="margin:0 0 12px 0">Password reset request</h2>
+          <p>Hello ${user.name || 'User'},</p>
+          <p>We received a request to reset your password.</p>
+          <p>
+            <a href="${resetUrl}" style="display:inline-block;padding:10px 16px;background:#4f46e5;color:#fff;text-decoration:none;border-radius:8px">
+              Reset Password
+            </a>
+          </p>
+          <p>This link expires in 15 minutes.</p>
+          <p>If you didn't request this, you can ignore this email.</p>
+        </div>
+      `
+    });
+
+    return res.json({ message: 'If this email exists, a reset link has been sent.' });
+  } catch (err) {
+    console.error('Error during forgot-password:', err);
+    return res.status(500).json({ error: 'Failed to process forgot password request' });
+  }
+});
+
+router.post('/reset-password', async (req, res) => {
+  const normalizedEmail = (req.body?.email || '').trim().toLowerCase();
+  const token = (req.body?.token || '').trim();
+  const newPassword = req.body?.newPassword || '';
+
+  if (!normalizedEmail || !token || !newPassword) {
+    return res.status(400).json({ error: 'Email, token and new password are required' });
+  }
+
+  if (newPassword.length < 6) {
+    return res.status(400).json({ error: 'Password must be at least 6 characters' });
+  }
+
+  try {
+    const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
+    const [users] = await pool.execute(
+      `SELECT id, reset_password_expires
+       FROM pmx_users
+       WHERE email = ? AND reset_password_token = ?
+       LIMIT 1`,
+      [normalizedEmail, tokenHash]
+    );
+
+    if (users.length === 0) {
+      return res.status(400).json({ error: 'Invalid or expired reset link' });
+    }
+
+    const user = users[0];
+    if (!user.reset_password_expires || new Date(user.reset_password_expires) < new Date()) {
+      await pool.execute(
+        'UPDATE pmx_users SET reset_password_token = NULL, reset_password_expires = NULL WHERE id = ?',
+        [user.id]
+      );
+      return res.status(400).json({ error: 'Invalid or expired reset link' });
+    }
+
+    const hashedPassword = await bcrypt.hash(newPassword, 10);
+    await pool.execute(
+      `UPDATE pmx_users
+       SET password = ?, reset_password_token = NULL, reset_password_expires = NULL
+       WHERE id = ?`,
+      [hashedPassword, user.id]
+    );
+
+    return res.json({ message: 'Password has been reset successfully' });
+  } catch (err) {
+    console.error('Error during reset-password:', err);
+    return res.status(500).json({ error: 'Failed to reset password' });
+  }
+});
+
 
 router.post('/validate-invitee', async (req, res) => {
   const { meetingId, email } = req.body;
@@ -97,15 +205,15 @@ router.post('/validate-invitee', async (req, res) => {
 
   try {
     const [meetings] = await pool.execute('SELECT invitees_json,creator_email FROM pmx_scheduled_meetings WHERE room_id = ?', [meetingId]);
-    console.log('meetingid',meetings)
+    console.log('meetingid', meetings)
     if (meetings.length === 0) {
       return res.status(404).json({ error: 'Meeting not found' });
     }
 
     let invitees = [];
     const inviteesJson = meetings[0].invitees_json || '[]';
-     const creator_email = meetings[0].creator_email || '[]';
-    
+    const creator_email = meetings[0].creator_email || '[]';
+
     // try {
     //   // Attempt to parse invitees_json as JSON
     //   invitees = JSON.parse(inviteesJson);
@@ -128,11 +236,11 @@ router.post('/validate-invitee', async (req, res) => {
     // res.json({ valid: true, isHost: true }); 
 
     const isCreator = creator_email.includes(email);
-const valid = inviteesJson.includes(email) || isCreator;
-res.json({ 
-  valid, 
-  isHost: isCreator 
-});
+    const valid = inviteesJson.includes(email) || isCreator;
+    res.json({
+      valid,
+      isHost: isCreator
+    });
   } catch (err) {
     console.error('Error validating invitee:', err);
     res.status(500).json({ error: 'Failed to validate invitee' });
@@ -141,7 +249,7 @@ res.json({
 
 router.post('/claim-host', async (req, res) => {
   const { meetingId, email } = req.body;
-  
+
   if (!meetingId || !email) {
     console.log('❌ Invalid claim-host request:', { meetingId, email });
     return res.status(400).json({ error: 'Meeting ID and email are required' });
@@ -160,18 +268,18 @@ router.post('/claim-host', async (req, res) => {
 
     const isRealHost = meetings[0].creator_email === email;
     console.log(`Host check for ${email} in ${meetingId}: ${isRealHost}`);
-    
-    res.json({ 
+
+    res.json({
       isHost: isRealHost,
       meetingId: meetingId,
       userEmail: email
     });
-    
+
   } catch (err) {
     console.error('Claim host error:', err);
-    res.status(500).json({ 
+    res.status(500).json({
       error: 'Server error during host verification',
-      details: err.message 
+      details: err.message
     });
   }
 });
@@ -191,37 +299,37 @@ router.get('/meetings/:userId', async (req, res) => {
 
     // Fetch meetings created by user
     const [createdMeetings] = await pool.execute(
-      `SELECT * FROM pmx_scheduled_meetings WHERE creator_id = ?`, 
+      `SELECT * FROM pmx_scheduled_meetings WHERE creator_id = ?`,
       [userId]
     );
 
     // Fetch meetings where user is an invitee
     const [invitedMeetings] = await pool.execute(
-      `SELECT * FROM pmx_scheduled_meetings WHERE invitees_json LIKE ?`, 
+      `SELECT * FROM pmx_scheduled_meetings WHERE invitees_json LIKE ?`,
       [`%${userEmail}%`]
     );
 
     // Merge and format results
     // Merge creator and invitee meetings
-const allMeetings = [...createdMeetings, ...invitedMeetings];
+    const allMeetings = [...createdMeetings, ...invitedMeetings];
 
-// Remove duplicates by 'id'
-const uniqueMeetings = Array.from(
-  new Map(allMeetings.map(m => [m.id, m])).values()
-);
+    // Remove duplicates by 'id'
+    const uniqueMeetings = Array.from(
+      new Map(allMeetings.map(m => [m.id, m])).values()
+    );
 
-// Format and send
-const formattedMeetings = uniqueMeetings.map(m => ({
-  id: m.id,
-  roomId: m.room_id,
-  title: m.meeting_title,
-  host: m.creator_name,
-  startTime: m.start_datetime,
-  endTime: m.end_datetime,
-  description: m.description,
-}));
+    // Format and send
+    const formattedMeetings = uniqueMeetings.map(m => ({
+      id: m.id,
+      roomId: m.room_id,
+      title: m.meeting_title,
+      host: m.creator_name,
+      startTime: m.start_datetime,
+      endTime: m.end_datetime,
+      description: m.description,
+    }));
 
-res.json(formattedMeetings);
+    res.json(formattedMeetings);
 
   } catch (err) {
     console.error("Error fetching meetings:", err);
@@ -289,10 +397,10 @@ router.post('/claim-host-instant', async (req, res) => {
 
 
 router.post('/schedule', async (req, res) => {
-  const { meetingTitle, creatorId, creatorName, creatorEmail, scheduledDate,startTime,endTime,duration, invitees, description, meetingType } = req.body;
+  const { meetingTitle, creatorId, creatorName, creatorEmail, scheduledDate, startTime, endTime, duration, invitees, description, meetingType } = req.body;
 
 
-  if (!meetingTitle || !creatorId || !creatorName || !creatorEmail || !scheduledDate  || !Array.isArray(invitees)) {
+  if (!meetingTitle || !creatorId || !creatorName || !creatorEmail || !scheduledDate || !Array.isArray(invitees)) {
     console.log('Invalid input data:', { meetingTitle, creatorId, creatorName, creatorEmail, scheduledDate, scheduledTime, invitees });
     return res.status(400).json({ error: 'Invalid input data' });
   }
@@ -307,41 +415,41 @@ router.post('/schedule', async (req, res) => {
   const scheduledDatetime = `${scheduledDate} ${startTime}:00`;
 
   try {
- // Create date strings in local timezone
+    // Create date strings in local timezone
     const startDateTimeStr = `${scheduledDate}T${startTime}:00`;
     const endDateTimeStr = `${scheduledDate}T${endTime}:00`;
     const scheduledDateTimeStr = scheduledDate;
-    
+
     // Create Date objects (will be interpreted in local timezone)
     const startDateTimeLocal = new Date(startDateTimeStr);
     const endDateTimeLocal = new Date(endDateTimeStr);
     const scheduledDateTimeLocal = new Date(scheduledDateTimeStr);
-  
-    
+
+
     // Check if dates are valid
     if (isNaN(startDateTimeLocal.getTime())) {
       console.error('Invalid start date/time:', startDateTimeStr);
       return res.status(400).json({ error: 'Invalid start date/time format' });
     }
-    
+
     if (isNaN(endDateTimeLocal.getTime())) {
       console.error('Invalid end date/time:', endDateTimeStr);
       return res.status(400).json({ error: 'Invalid end date/time format' });
     }
-    
+
     // Validate end time is after start time
     if (endDateTimeLocal <= startDateTimeLocal) {
       return res.status(400).json({ error: 'End time must be after start time' });
     }
-    
+
     // Convert to UTC ISO strings
     const startDateTimeUTC = startDateTimeLocal.toISOString().replace('T', ' ').substring(0, 19);
     const endDateTimeUTC = endDateTimeLocal.toISOString().replace('T', ' ').substring(0, 19);
     const scheduledDateTimeUTC = scheduledDateTimeLocal.toISOString().replace('T', ' ').substring(0, 19);
-    
+
     // Also keep the scheduled_datetime as start time in UTC (for backward compatibility)
     const scheduledDatetimeUTC = startDateTimeUTC;
-    
+
     console.log('Date conversions:', {
       input: {
         scheduledDate,
@@ -359,7 +467,7 @@ router.post('/schedule', async (req, res) => {
         scheduled: scheduledDatetimeUTC
       }
     });
-    
+
     // Insert into database with UTC times
     const [result] = await pool.execute(
       `INSERT INTO pmx_scheduled_meetings 
@@ -385,12 +493,12 @@ router.post('/schedule', async (req, res) => {
     );
 
 
-  const baseUrl = req.protocol + '://' + req.get('host');
-  const link = `${baseUrl}/join/${roomId}`;
+    const baseUrl = req.protocol + '://' + req.get('host');
+    const link = `${baseUrl}/join/${roomId}`;
 
-  // SEND EMAILS
-  const emailSubject = `You're invited to "${meetingTitle}"`;
- const emailBody = `
+    // SEND EMAILS
+    const emailSubject = `You're invited to "${meetingTitle}"`;
+    const emailBody = `
 <!DOCTYPE html>
 <html>
 <head>
@@ -529,8 +637,8 @@ router.post('/schedule', async (req, res) => {
         }
         .join-button {
             display: inline-block;
-            background-color: #4f46e5;
-            background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);
+            background-color: #0ea5e9;
+            background: linear-gradient(135deg, #0ea5e9 0%, #14b8a6 100%);
             color: #ffffff !important;
             text-decoration: none;
             padding: 18px 36px;
@@ -538,12 +646,12 @@ router.post('/schedule', async (req, res) => {
             font-weight: 600;
             font-size: 17px;
             transition: all 0.3s ease;
-            box-shadow: 0 6px 20px rgba(99, 102, 241, 0.3);
+            box-shadow: 0 6px 20px rgba(14, 165, 233, 0.35);
             letter-spacing: 0.3px;
         }
         .join-button:hover {
             transform: translateY(-3px);
-            box-shadow: 0 10px 25px rgba(99, 102, 241, 0.4);
+            box-shadow: 0 10px 25px rgba(20, 184, 166, 0.4);
         }
         .invitees-section {
             background: #f0f9ff;
@@ -713,7 +821,7 @@ router.post('/schedule', async (req, res) => {
         <div class="header">
             <div class="header-icon">&#128197;</div>
             <h1 class="header-title" style="color:#ffffff !important;">Meeting Invitation</h1>
-            <p class="header-subtitle" style="color:#ffffff !important;">You've been invited to join a virtual meeting</p>
+            <p class="header-subtitle" style="color:#ffffff !important;">You are invited to join</p>
         </div>
         
         <div class="content">
@@ -739,6 +847,7 @@ router.post('/schedule', async (req, res) => {
                     </div>
                 </div>
                 
+                <!--
                 <div class="detail-row">
                     <div class="detail-icon">&#128205;</div>
                     <div class="detail-content">
@@ -746,11 +855,12 @@ router.post('/schedule', async (req, res) => {
                         <div class="detail-value">${meetingType || 'Regular Meeting'}</div>
                     </div>
                 </div>
+                -->
             </div>
             
             ${description ? `
             <div class="description-box">
-                <h3 class="description-title">Meeting Description</h3>
+                <h3 class="description-title">Description</h3>
                 <p class="description-text">${description}</p>
             </div>
             ` : ''}
@@ -765,37 +875,32 @@ router.post('/schedule', async (req, res) => {
             </div>
             
             <div class="button-container">
-                <a href="${link}" class="join-button" style="background-color:#4f46e5;color:#ffffff !important;text-decoration:none;">&#127919; Join Meeting Now</a>
+                <a href="${link}" class="join-button" style="background-color:#0ea5e9;color:#ffffff !important;text-decoration:none;">&#127919; Join Meeting Now</a>
                 <div class="action-links">
                     <a href="${generateCalendarLink({
-                        title: meetingTitle,
-                        description: description || '',
-                        start: startDateTimeUTC,
-                        end: endDateTimeUTC,
-                        location: link
-                    })}" class="action-link">
+      title: meetingTitle,
+      description: description || '',
+      start: startDateTimeUTC,
+      end: endDateTimeUTC,
+      location: link
+    })}" class="action-link">
                         &#128197; Add to Calendar
                     </a>
                     <a href="mailto:${creatorEmail}?subject=Regarding: ${meetingTitle}" class="action-link">
-                        &#9993; Email Host
+                        &#9993; ${creatorEmail}
                     </a>
                 </div>
             </div>
             
             <div class="meeting-id">
                 <strong>Meeting ID:</strong> ${roomId}<br>
-                <strong>Meeting Link:</strong> <a href="${link}" style="color: #6366f1; word-break: break-all;">${link}</a>
+                <strong>Join Link:</strong> <a href="${link}" style="color: #6366f1; word-break: break-all;">${link}</a>
             </div>
         </div>
         
         <div class="footer">
             <p>This is an automated meeting invitation from ${creatorName}.</p>
-            <p style="font-size: 13px; margin-top: 8px;">Please do not reply directly to this email. Contact the host for any changes.</p>
-            <div class="footer-links">
-                <a href="#" class="footer-link">Add to Google Calendar</a>
-                <a href="#" class="footer-link">Add to Outlook</a>
-                <a href="#" class="footer-link">Meeting Options</a>
-            </div>
+            <p style="font-size: 13px; margin-top: 8px;">For any changes, contact the host.</p>
         </div>
     </div>
     </div>
@@ -803,42 +908,42 @@ router.post('/schedule', async (req, res) => {
 </html>
 `;
 
-// Add this helper function in your backend
-function generateCalendarLink({ title, description, start, end, location }) {
-    const formatDate = (dateStr) => {
+    // Add this helper function in your backend
+    function generateCalendarLink({ title, description, start, end, location }) {
+      const formatDate = (dateStr) => {
         return dateStr.replace(/[-:]/g, '').replace(' ', 'T') + 'Z';
-    };
-    
-    const startFormatted = formatDate(start);
-    const endFormatted = formatDate(end);
-    
-    // Generate Google Calendar link
-    const googleCalendarUrl = `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${encodeURIComponent(title)}&details=${encodeURIComponent(description + '\\n\\nJoin link: ' + location)}&dates=${startFormatted}/${endFormatted}&location=${encodeURIComponent(location)}&sf=true&output=xml`;
-    
-    return googleCalendarUrl;
-}
+      };
 
-  await Promise.all(validInvitees.map(email => sendEmail({
-    to: email,
-    subject: emailSubject,
-    html: emailBody,
-    replyTo: creatorEmail
-  })));
+      const startFormatted = formatDate(start);
+      const endFormatted = formatDate(end);
 
-  console.log(`Invitations sent to: ${validInvitees.join(', ')}`);
+      // Generate Google Calendar link
+      const googleCalendarUrl = `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${encodeURIComponent(title)}&details=${encodeURIComponent(description + '\\n\\nJoin link: ' + location)}&dates=${startFormatted}/${endFormatted}&location=${encodeURIComponent(location)}&sf=true&output=xml`;
 
-  res.json({
-    id: result.insertId,
-    roomId,
-    link,
-    message: 'Meeting scheduled successfully',
-  });
+      return googleCalendarUrl;
+    }
 
-  
-} catch (err) {
-  console.error('Error scheduling meeting:', err);
-  res.status(500).json({ error: 'Failed to schedule meeting' });
-}
+    await Promise.all(validInvitees.map(email => sendEmail({
+      to: email,
+      subject: emailSubject,
+      html: emailBody,
+      replyTo: creatorEmail
+    })));
+
+    console.log(`Invitations sent to: ${validInvitees.join(', ')}`);
+
+    res.json({
+      id: result.insertId,
+      roomId,
+      link,
+      message: 'Meeting scheduled successfully',
+    });
+
+
+  } catch (err) {
+    console.error('Error scheduling meeting:', err);
+    res.status(500).json({ error: 'Failed to schedule meeting' });
+  }
 
 });
 
@@ -846,17 +951,17 @@ function generateCalendarLink({ title, description, start, end, location }) {
 // Search endpoint (for partial matches)
 router.get('/users/search', async (req, res) => {
   const { q } = req.query;
-  
+
   if (!q || q.length < 3) {
     return res.json({ users: [] });
   }
-  
+
   try {
     const [users] = await pool.execute(
       'SELECT name, email FROM pmx_users WHERE email LIKE ? OR name LIKE ? LIMIT 5',
       [`%${q}%`, `%${q}%`]
     );
-    
+
     res.json({ users });
   } catch (err) {
     console.error('Error searching users:', err);

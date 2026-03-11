@@ -7,6 +7,8 @@ const MeetingHeader = ({
   peers,
   waitingUsers = [], // Add this prop
   unreadChatCount = 0,
+  connectionState = 'connecting',
+  networkQuality = { level: 'unknown', label: 'Network: --' },
   showSidePanel,
   sidePanelType,
   toggleSidePanel,
@@ -14,11 +16,31 @@ const MeetingHeader = ({
   isExternal,
   leaveRoom
 }) => {
+  const connectionLabelMap = {
+    connected: 'Connected',
+    connecting: 'Connecting…',
+    reconnecting: 'Reconnecting…',
+    disconnected: 'Disconnected',
+    offline: 'Offline',
+    failed: 'Reconnect failed',
+    error: 'Connection error'
+  };
+
+  const connectionLabel = connectionLabelMap[connectionState] || 'Connecting…';
+
   return (
     <header className="top-bar">
       <div className="meeting-info">
         <h2>Meeting ID: {roomId} {isHost ? '(Host)' : ''}</h2>
         <span>{Object.keys(peers).length + 1} participant{Object.keys(peers).length !== 1 ? 's' : ''}</span>
+      </div>
+      <div className="status-pills" aria-live="polite">
+        <span className={`status-pill ${connectionState}`} title="Connection status">
+          {connectionLabel}
+        </span>
+        <span className={`status-pill ${networkQuality.level}`} title="Network quality">
+          {networkQuality.label}
+        </span>
       </div>
       <div className="top-controls">
         <div className="lobby-button-container" style={{ position: 'relative' }}>
